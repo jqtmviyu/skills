@@ -1,6 +1,6 @@
 # Cross-Platform Release and End-to-End Acceptance
 
-Status: claimed
+Status: resolved
 Blocked by: 06
 
 ## User outcome
