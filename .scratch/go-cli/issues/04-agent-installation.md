@@ -1,6 +1,6 @@
 # Agent Registry and Skill Installation
 
-Status: claimed
+Status: resolved
 Blocked by: 02, 03
 
 ## User outcome
