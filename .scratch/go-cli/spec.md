@@ -65,6 +65,7 @@ Git 获取采用 partial clone：先取提交与目录树，枚举符合现有�
 - Preserve update semantics for Global and Project locks. Use GitHub Trees metadata for supported metadata-only checks; use partial Git fetches for project checks and API fallbacks. Fetch all files required to compute the existing hash for a locked skill directory, not unrelated repository skill payloads.
 - Keep Global lock schema at version 3 and read historical Global versions 1 and 2. On a write, normalize supported older Global locks to version 3. Keep Project lock schema at version 1. Read and preserve unknown fields when updating either lock. Read-only commands must not rewrite lock files.
 - Keep the existing hash contracts: Global GitHub `skillFolderHash` is the Git tree hash; Project `computedHash` is the SHA-256 content hash with current exclusions. Do not merge these into one algorithm.
+- For Project `computedHash`, sort normalized relative POSIX paths using the process default locale as Node `localeCompare` does: `LC_ALL` first, then `LANG`, with a deterministic English fallback; do not use `LC_COLLATE` as an override. Use stable collation so equal-comparison paths retain traversal order.
 - Preserve interaction semantics and JSON contracts. Exact ANSI styling, animation, and presentation copy do not need byte-for-byte compatibility.
 - Build release binaries for macOS, Linux, and Windows on amd64 and arm64; support `go install` as an additional installation route.
 
