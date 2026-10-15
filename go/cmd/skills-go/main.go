@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 )
 
 const version = "dev"
@@ -37,33 +36,40 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "skills-go: unknown command %q\n", args[0])
 		return 2
 	}
-	if canonical == "add" {
-		return runAdd(args[1:], stdout, stderr)
+	rest := args[1:]
+	if containsHelpFlag(rest) {
+		switch canonical {
+		case "add":
+			printAddHelp(stdout)
+		case "use":
+			printUseHelp(stdout)
+		case "init":
+			fmt.Fprintln(stdout, "Usage: skills-go init [name]")
+		default:
+			printHelp(stdout)
+		}
+		return 0
 	}
-	fmt.Fprintf(stderr, "skills-go: command %q is not implemented yet\n", canonical)
-	return 1
-}
-
-func runAdd(args []string, stdout, stderr io.Writer) int {
-	jsonMode := false
-	hasSource := false
-	for _, arg := range args {
-		if arg == "--json" {
-			jsonMode = true
-		}
-		if !strings.HasPrefix(arg, "-") {
-			hasSource = true
-		}
-	}
-	if !hasSource {
-		if jsonMode {
-			fmt.Fprintln(stdout, "[]")
-		}
-		fmt.Fprintln(stderr, "skills-go: add requires a source")
+	switch canonical {
+	case "add":
+		return runAdd(rest, stdout, stderr)
+	case "use":
+		return runUse(rest, stdout, stderr)
+	case "init":
+		return runInit(rest, stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "skills-go: command %q is not implemented yet\n", canonical)
 		return 1
 	}
-	fmt.Fprintln(stderr, `skills-go: command "add" is not implemented yet`)
-	return 1
+}
+
+func containsHelpFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--help" || arg == "-h" {
+			return true
+		}
+	}
+	return false
 }
 
 func printHelp(stdout io.Writer) {
@@ -81,5 +87,25 @@ Core commands:
 Options:
   --help, -h     Show this help message
   --version, -v  Show version number
+`)
+}
+
+func printAddHelp(stdout io.Writer) {
+	fmt.Fprint(stdout, `Usage: skills-go add <source> [options]
+
+Options:
+  -g, --global           Install globally
+  -p, --project          Install in the current project (default)
+  -a, --agent <agents>   Select one or more agents; use '*' for all supported agents
+  -s, --skill <skills>   Select one or more skill names; use '*' for all skills
+  -l, --list             List available skills without installing
+  -y, --yes              Skip prompts and select all discovered skills when unspecified
+  --all                  Shorthand for --skill '*' --agent '*' -y
+  --copy                 Copy files instead of symlinking agent directories
+  --subagent <names>     Install to Eve subagents ('root' selects the root agent)
+  --full-depth           Search all nested directories
+  --json                 Emit the add result as a JSON array (requires -y)
+  --metadata <json>      Validate JSON metadata for compatibility
+  --help, -h             Show this help message
 `)
 }

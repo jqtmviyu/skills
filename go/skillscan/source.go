@@ -89,7 +89,7 @@ func ParseSource(input string) (Source, error) {
 	if strings.HasPrefix(input, "git@") {
 		return Source{Kind: GitSource, URL: input, Ref: ref, SkillFilter: skillFilter}, nil
 	}
-	if strings.HasPrefix(input, "ssh://") || strings.HasPrefix(input, "git://") || strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
+	if strings.HasPrefix(input, "ssh://") || strings.HasPrefix(input, "git://") || strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") || strings.HasPrefix(input, "file://") {
 		return parseGitURL(input, ref, skillFilter)
 	}
 
@@ -139,7 +139,7 @@ func localSourcePath(input string) (string, bool) {
 
 func parseGitURL(input, fragmentRef, skillFilter string) (Source, error) {
 	parsed, err := url.Parse(input)
-	if err != nil || parsed.Host == "" {
+	if err != nil || (parsed.Host == "" && parsed.Scheme != "file") || (parsed.Scheme == "file" && !filepath.IsAbs(parsed.Path)) {
 		return Source{}, fmt.Errorf("invalid Git URL %q", input)
 	}
 	segments := splitURLPath(parsed.EscapedPath())

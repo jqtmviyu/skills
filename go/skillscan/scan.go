@@ -113,6 +113,32 @@ func (scan *Scan) Candidates() []Candidate {
 
 func (scan *Scan) FilterStatus() FilterStatus { return scan.filterStatus }
 
+// GitTreeHash returns the Git object ID for a discovered directory, when the
+// scan came from a Git repository. The root skill uses the repository root tree.
+func (scan *Scan) GitTreeHash(directory string) (string, bool) {
+	if scan.source.Kind != GitSource || scan.commit == "" {
+		return "", false
+	}
+	object := scan.commit + "^{tree}"
+	if directory != "" && directory != "." {
+		cleaned, err := cleanSubpath(directory)
+		if err != nil || cleaned == "" {
+			return "", false
+		}
+		object = scan.commit + ":" + cleaned
+	}
+	resolved, _, err := runGit(scan.ctx, scan.root, "rev-parse", object)
+	if err != nil {
+		return "", false
+	}
+	resolved = strings.TrimSpace(resolved)
+	kind, _, err := runGit(scan.ctx, scan.root, "cat-file", "-t", resolved)
+	if err != nil || strings.TrimSpace(kind) != "tree" {
+		return "", false
+	}
+	return resolved, true
+}
+
 // Materialize resolves selected repository-relative paths. A local source is
 // returned in place; a Git source sparse-checks out only selected skill trees.
 func (scan *Scan) Materialize(selectedPaths []string) ([]MaterializedSkill, error) {
