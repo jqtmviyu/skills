@@ -1,6 +1,6 @@
 # List, Remove, Restore, and Update Commands
 
-Status: claimed
+Status: resolved
 Blocked by: 03, 05
 
 ## User outcome
