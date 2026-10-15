@@ -1,6 +1,6 @@
 # Add, Use, and Init Commands
 
-Status: claimed
+Status: resolved
 Blocked by: 04
 
 ## User outcome
