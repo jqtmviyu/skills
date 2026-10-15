@@ -115,30 +115,28 @@ func TestHelpListsSupportedCommands(t *testing.T) {
 	}
 }
 
-func TestOutOfScopeCommandsRemainUnimplemented(t *testing.T) {
+func TestManagementAliasesDispatchToImplementedCommands(t *testing.T) {
 	binary := buildCLI(t)
-	commands := []struct {
-		name      string
-		canonical string
-	}{
-		{"remove", "remove"}, {"rm", "remove"}, {"r", "remove"},
-		{"list", "list"}, {"ls", "list"},
-		{"update", "update"}, {"check", "update"}, {"upgrade", "update"},
-		{"experimental_install", "experimental_install"}, {"install", "experimental_install"}, {"i", "experimental_install"},
+	for _, command := range []string{"ls", "install", "i", "check", "upgrade"} {
+		t.Run(command, func(t *testing.T) {
+			args := []string{command}
+			if command == "check" || command == "upgrade" {
+				args = append(args, "--yes")
+			}
+			stdout, stderr, exitCode := runCLI(t, binary, args...)
+			if exitCode != 0 {
+				t.Fatalf("%s exit = %d; stdout: %s; stderr: %s", command, exitCode, stdout, stderr)
+			}
+			if strings.Contains(stderr, "not implemented") {
+				t.Fatalf("%s alias did not dispatch: %s", command, stderr)
+			}
+		})
 	}
-
-	for _, command := range commands {
-		t.Run(command.name, func(t *testing.T) {
-			stdout, stderr, exitCode := runCLI(t, binary, command.name)
-			if exitCode != 1 {
-				t.Fatalf("exit code = %d, want 1; stderr: %s", exitCode, stderr)
-			}
-			if stdout != "" {
-				t.Fatalf("stdout = %q, want empty", stdout)
-			}
-			wantError := "skills-go: command \"" + command.canonical + "\" is not implemented yet\n"
-			if stderr != wantError {
-				t.Fatalf("stderr = %q, want %q", stderr, wantError)
+	for _, command := range []string{"rm", "r"} {
+		t.Run(command, func(t *testing.T) {
+			_, stderr, exitCode := runCLI(t, binary, command, "missing-skill", "--yes")
+			if exitCode != 0 || !strings.Contains(stderr, "no matching skills found") {
+				t.Fatalf("%s alias exit/stderr = %d/%q, want compatible missing-skill result", command, exitCode, stderr)
 			}
 		})
 	}

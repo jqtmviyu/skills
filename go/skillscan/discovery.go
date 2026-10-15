@@ -288,7 +288,10 @@ func (scan *Scan) readCandidate(skillFile, pluginName string) (Candidate, bool) 
 }
 
 func (scan *Scan) addCandidate(candidate Candidate, seenNames map[string]bool) {
-	if seenNames[candidate.Name] {
+	if _, exists := scan.byPath[candidate.Path]; exists {
+		return
+	}
+	if !scan.options.IncludeDuplicateNames && seenNames[candidate.Name] {
 		return
 	}
 	seenNames[candidate.Name] = true

@@ -13,6 +13,11 @@ type yamlValue struct {
 	boolean  bool
 }
 
+// ParseSkillMetadata reads the public fields used to identify an installed skill.
+func ParseSkillMetadata(raw string) (name, description string, internal, ok bool) {
+	return parseSkillFrontmatter(raw)
+}
+
 func parseSkillFrontmatter(raw string) (name, description string, internal, ok bool) {
 	raw = strings.TrimPrefix(raw, string(rune(0xFEFF)))
 	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")

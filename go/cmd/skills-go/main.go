@@ -45,6 +45,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 			printUseHelp(stdout)
 		case "init":
 			fmt.Fprintln(stdout, "Usage: skills-go init [name]")
+		case "list":
+			fmt.Fprintln(stdout, "Usage: skills-go list [--global] [--agent <agents>] [--json]")
+		case "remove":
+			fmt.Fprintln(stdout, "Usage: skills-go remove [skills...] [--global] [--agent <agents>] [--all] [--yes]")
+		case "update":
+			fmt.Fprintln(stdout, "Usage: skills-go update [skills...] [--global|--project] [--yes]")
+		case "experimental_install":
+			fmt.Fprintln(stdout, "Usage: skills-go experimental_install")
 		default:
 			printHelp(stdout)
 		}
@@ -57,6 +65,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runUse(rest, stdout, stderr)
 	case "init":
 		return runInit(rest, stdout, stderr)
+	case "list":
+		return runList(rest, stdout, stderr)
+	case "remove":
+		return runRemove(rest, stdout, stderr)
+	case "experimental_install":
+		return runRestore(rest, stdout, stderr)
+	case "update":
+		return runUpdate(rest, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "skills-go: command %q is not implemented yet\n", canonical)
 		return 1

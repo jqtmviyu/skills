@@ -12,9 +12,10 @@ import (
 )
 
 type Options struct {
-	FullDepth       bool
-	IncludeInternal bool
-	TempDir         string
+	FullDepth             bool
+	IncludeInternal       bool
+	IncludeDuplicateNames bool
+	TempDir               string
 }
 
 type Candidate struct {
