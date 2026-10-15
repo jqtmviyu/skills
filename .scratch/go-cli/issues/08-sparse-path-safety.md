@@ -1,6 +1,6 @@
 # Sparse Checkout Path Safety
 
-Status: ready-for-agent
+Status: resolved
 Blocked by: 02
 
 ## User outcome
