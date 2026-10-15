@@ -200,6 +200,9 @@ func sparsePattern(skillPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if strings.ContainsAny(cleaned, "\r\n") {
+		return "", fmt.Errorf("unsafe sparse skill path %q contains a line break", skillPath)
+	}
 	if cleaned == "" || cleaned == "." || path.IsAbs(cleaned) {
 		return "", fmt.Errorf("invalid sparse skill path %q", skillPath)
 	}

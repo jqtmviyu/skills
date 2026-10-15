@@ -16,6 +16,49 @@ import (
 	"time"
 )
 
+func TestGitMaterializeRejectsNewlinePathWithoutFetchingUnrelatedBlob(t *testing.T) {
+	const skillPath = "skills/unsafe\nunrelated"
+	fixture := newGitFixtureWithFiles(t, true, false, map[string]string{
+		skillPath + "/SKILL.md": "---\nname: unsafe\ndescription: Newline path.\n---\nSkill body.\n",
+	})
+	scan, err := Open(context.Background(), fixture.URL, Options{TempDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Open Git source: %v", err)
+	}
+	defer scan.Close()
+
+	if !scan.FilterStatus().Available {
+		t.Fatalf("fixture does not support partial filtering: %#v", scan.FilterStatus())
+	}
+	if !contains(candidatePaths(scan.Candidates()), skillPath) {
+		t.Fatalf("discovery did not retain the newline skill path %q: %v", skillPath, candidatePaths(scan.Candidates()))
+	}
+	unrelatedBlob := scan.fileObjects["unrelated/large.bin"]
+	if objectExistsWithoutLazyFetch(t, scan.root, unrelatedBlob) {
+		t.Fatal("unrelated large blob was fetched before materialization")
+	}
+
+	_, err = scan.Materialize([]string{skillPath})
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "line break") {
+		t.Errorf("Materialize error = %v, want a clear line-break path error", err)
+	}
+	if got := worktreeFiles(t, scan.root); len(got) != 0 {
+		t.Fatalf("failed materialization checked out files: %v", got)
+	}
+	if objectExistsWithoutLazyFetch(t, scan.root, unrelatedBlob) {
+		t.Fatal("failed materialization fetched the unrelated large blob")
+	}
+}
+
+func contains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
 func TestGitPartialScanFetchesMetadataThenOnlySelectedSkill(t *testing.T) {
 	fixture := newGitFixture(t, true, false)
 	temporaryRoot := t.TempDir()
@@ -202,6 +245,10 @@ type gitFixture struct {
 }
 
 func newGitFixture(t *testing.T, filter, rootSkill bool, rejectFilter ...bool) gitFixture {
+	return newGitFixtureWithFiles(t, filter, rootSkill, nil, rejectFilter...)
+}
+
+func newGitFixtureWithFiles(t *testing.T, filter, rootSkill bool, extraFiles map[string]string, rejectFilter ...bool) gitFixture {
 	t.Helper()
 	base := t.TempDir()
 	seed := filepath.Join(base, "seed")
@@ -224,6 +271,9 @@ func newGitFixture(t *testing.T, filter, rootSkill bool, rejectFilter ...bool) g
 		"skills-lock.json":                        `{"version":1,"skills":{"locked-skill":{"source":"source","sourceType":"github"}}}`,
 		"skills/alpha/scripts/run.sh":             "#!/bin/sh\nprintf alpha\\n\n",
 		"unrelated/large.bin":                     randomPayload(512 * 1024),
+	}
+	for name, content := range extraFiles {
+		files[name] = content
 	}
 	if rootSkill {
 		files["SKILL.md"] = "---\nname: repository\ndescription: Repository root skill.\n---\nRoot body.\n"
