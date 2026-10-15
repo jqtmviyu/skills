@@ -65,3 +65,48 @@ jobs:
 
       - name: Type check
         run: pnpm type-check
+
+  go:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: Check gofmt
+        working-directory: go
+        run: |
+          files=$(gofmt -l $(find . -type f -name '*.go'))
+          if [ -n "$files" ]; then
+            printf 'Go files need gofmt:\n%s\n' "$files"
+            exit 1
+          fi
+
+      - name: Test
+        working-directory: go
+        run: go test ./... -count=1
+
+      - name: Race detector
+        working-directory: go
+        run: go test -race ./...
+
+      - name: Vet
+        working-directory: go
+        run: go vet ./...
+
+      - name: Build
+        working-directory: go
+        run: go build ./...
+
+      - name: Install smoke test
+        working-directory: go
+        run: |
+          mkdir -p "$RUNNER_TEMP/skills-go-bin"
+          GOBIN="$RUNNER_TEMP/skills-go-bin" go install ./cmd/skills-go
+          "$RUNNER_TEMP/skills-go-bin/skills-go" --version
