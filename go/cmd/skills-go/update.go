@@ -51,6 +51,10 @@ type githubTreeEntry struct {
 	SHA  string `json:"sha"`
 }
 
+type githubRepositoryMetadata struct {
+	DefaultBranch string `json:"default_branch"`
+}
+
 func parseUpdateArgs(args []string) (updateOptions, error) {
 	var options updateOptions
 	for _, arg := range args {
@@ -181,7 +185,8 @@ func updateGlobalSkills(options updateOptions, stdout, stderr io.Writer) (int, b
 		return 0, true
 	}
 	groups := make(map[string][]updateItem)
-	var keys []string
+	wellKnownGroups := make(map[string][]updateItem)
+	var keys, wellKnownKeys []string
 	found := 0
 	for name, entry := range lock.Skills {
 		if !matchesUpdateFilter(name, options.skills) {
@@ -189,9 +194,22 @@ func updateGlobalSkills(options updateOptions, stdout, stderr io.Writer) (int, b
 		}
 		found++
 		sourceType, _ := entry.String("sourceType")
+		if sourceType == "well-known" {
+			baseURL, hasBaseURL := entry.String("sourceBaseUrl")
+			digest, hasDigest := entry.String("wellKnownDigest")
+			if !hasBaseURL || baseURL == "" || !hasDigest || digest == "" {
+				fmt.Fprintf(stdout, "Skipping global skill %s: no supported well-known version metadata.\n", name)
+				continue
+			}
+			if _, exists := wellKnownGroups[baseURL]; !exists {
+				wellKnownKeys = append(wellKnownKeys, baseURL)
+			}
+			wellKnownGroups[baseURL] = append(wellKnownGroups[baseURL], updateItem{name: name, entry: entry})
+			continue
+		}
 		hash, hasHash := entry.String("skillFolderHash")
 		skillPath, hasPath := entry.String("skillPath")
-		if sourceType == "local" || sourceType == "well-known" || !hasHash || hash == "" || !hasPath || skillPath == "" {
+		if sourceType == "local" || !hasHash || hash == "" || !hasPath || skillPath == "" {
 			fmt.Fprintf(stdout, "Skipping global skill %s: no supported version metadata.\n", name)
 			continue
 		}
@@ -202,7 +220,30 @@ func updateGlobalSkills(options updateOptions, stdout, stderr io.Writer) (int, b
 		groups[key] = append(groups[key], updateItem{name: name, entry: entry})
 	}
 	sort.Strings(keys)
+	sort.Strings(wellKnownKeys)
 	failed := false
+	wellKnownLockChanged := false
+	for _, baseURL := range wellKnownKeys {
+		items := wellKnownGroups[baseURL]
+		changed, checkErr := changedWellKnownItems(baseURL, items)
+		if checkErr != nil {
+			fmt.Fprintf(stdout, "Could not check well-known skills from %s: %v\n", baseURL, checkErr)
+			continue
+		}
+		if len(changed) == 0 {
+			continue
+		}
+		fmt.Fprintf(stdout, "Found %d global update(s) from %s.\n", len(changed), baseURL)
+		lockChanged, updateFailed := updateWellKnownItems(baseURL, changed, true, "", lock, nil, stdout, stderr)
+		wellKnownLockChanged = wellKnownLockChanged || lockChanged
+		failed = failed || updateFailed
+	}
+	if wellKnownLockChanged {
+		if err := lockfile.WriteGlobal(lock); err != nil {
+			fmt.Fprintf(stderr, "skills-go: write Global well-known lock: %v\n", err)
+			failed = true
+		}
+	}
 	for _, key := range keys {
 		items := groups[key]
 		first := items[0].entry
@@ -251,6 +292,139 @@ func globalSourceKey(entry lockfile.Entry) string {
 	return source + "\n" + ref
 }
 
+func changedWellKnownItems(baseURL string, items []updateItem) ([]updateItem, error) {
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		names = append(names, item.name)
+	}
+	digests, err := fetchWellKnownDigests(baseURL, names)
+	if err != nil {
+		return nil, err
+	}
+	var changed []updateItem
+	for _, item := range items {
+		current, exists := digests[item.name]
+		locked, _ := item.entry.String("wellKnownDigest")
+		if exists && current != locked {
+			changed = append(changed, item)
+		}
+	}
+	return changed, nil
+}
+
+func updateWellKnownItems(baseURL string, items []updateItem, global bool, cwd string, globalLock *lockfile.GlobalLock, projectLock *lockfile.ProjectLock, stdout, stderr io.Writer) (bool, bool) {
+	session, err := openAddSource(context.Background(), baseURL, skillscan.Options{FullDepth: true, IncludeInternal: true, IncludeDuplicateNames: true})
+	if err != nil {
+		fmt.Fprintf(stderr, "skills-go: fetch well-known updates from %s: %v\n", baseURL, err)
+		return false, true
+	}
+	defer session.Close()
+	if !session.wellKnown {
+		fmt.Fprintf(stderr, "skills-go: source %s no longer provides a supported well-known index\n", baseURL)
+		return false, true
+	}
+
+	candidates := make(map[string][]skillscan.Candidate)
+	for _, candidate := range session.scan.Candidates() {
+		key := strings.ToLower(candidate.Name)
+		candidates[key] = append(candidates[key], candidate)
+	}
+	selected := make(map[string]skillscan.Candidate, len(items))
+	var paths []string
+	failed := false
+	for _, item := range items {
+		matches := candidates[strings.ToLower(item.name)]
+		if len(matches) != 1 {
+			fmt.Fprintf(stderr, "skills-go: well-known skill %s is missing or ambiguous at %s\n", item.name, baseURL)
+			failed = true
+			continue
+		}
+		selected[item.name] = matches[0]
+		paths = append(paths, matches[0].Path)
+	}
+	if len(paths) == 0 {
+		return false, failed
+	}
+	materialized, err := session.scan.Materialize(paths)
+	if err != nil {
+		fmt.Fprintf(stderr, "skills-go: materialize well-known updates from %s: %v\n", baseURL, err)
+		return false, true
+	}
+	byPath := make(map[string]skillscan.MaterializedSkill, len(materialized))
+	for _, skill := range materialized {
+		byPath[skill.Candidate.Path] = skill
+	}
+	changedLock := false
+	for _, item := range items {
+		candidate, ok := selected[item.name]
+		if !ok {
+			continue
+		}
+		skill, ok := byPath[candidate.Path]
+		if !ok {
+			fmt.Fprintf(stderr, "skills-go: materialized well-known skill %s is missing\n", item.name)
+			failed = true
+			continue
+		}
+		if err := installManagedSkill(item.name, skill.Directory, global, cwd, lockStringArray(item.entry, "subagents")); err != nil {
+			fmt.Fprintf(stderr, "skills-go: update well-known skill %s: %v\n", item.name, err)
+			failed = true
+			continue
+		}
+		digest := session.wellKnownDigests[candidate.Name]
+		if digest == "" {
+			digest, err = computeWellKnownDigest(skill.Directory)
+			if err != nil {
+				fmt.Fprintf(stderr, "skills-go: hash updated well-known skill %s: %v\n", item.name, err)
+				failed = true
+				continue
+			}
+		}
+		if global {
+			if globalLock == nil {
+				fmt.Fprintf(stderr, "skills-go: Global lock is unavailable for well-known skill %s\n", item.name)
+				failed = true
+				continue
+			}
+			entry := globalLock.Skills[item.name]
+			if err := entry.Set("wellKnownDigest", digest); err != nil {
+				fmt.Fprintf(stderr, "skills-go: update Global lock entry %s: %v\n", item.name, err)
+				failed = true
+				continue
+			}
+			_ = entry.Set("updatedAt", time.Now().UTC().Format(time.RFC3339Nano))
+			globalLock.Skills[item.name] = entry
+		} else {
+			if projectLock == nil {
+				fmt.Fprintf(stderr, "skills-go: Project lock is unavailable for well-known skill %s\n", item.name)
+				failed = true
+				continue
+			}
+			projectHash, hashErr := lockfile.ComputeProjectHash(skill.Directory)
+			if hashErr != nil {
+				fmt.Fprintf(stderr, "skills-go: hash updated Project skill %s: %v\n", item.name, hashErr)
+				failed = true
+				continue
+			}
+			entry := projectLock.Skills[item.name]
+			if err := entry.Set("wellKnownDigest", digest); err != nil {
+				fmt.Fprintf(stderr, "skills-go: update Project lock digest %s: %v\n", item.name, err)
+				failed = true
+				continue
+			}
+			if err := entry.Set("computedHash", projectHash); err != nil {
+				fmt.Fprintf(stderr, "skills-go: update Project lock hash %s: %v\n", item.name, err)
+				failed = true
+				continue
+			}
+			projectLock.Skills[item.name] = entry
+		}
+		changedLock = true
+		fmt.Fprintf(stdout, "Updated %s well-known skill %s.\n", scopeName(global), item.name)
+	}
+	return changedLock, failed
+}
+
 func fetchGitHubTree(entry lockfile.Entry) (*githubTreeDocument, error) {
 	owner, repository, ok := githubRepository(entry)
 	if !ok {
@@ -262,39 +436,28 @@ func fetchGitHubTree(entry lockfile.Entry) (*githubTreeDocument, error) {
 	}
 	ref, _ := entry.String("ref")
 	refs := []string{ref}
-	if ref == "" {
-		refs = []string{"main", "master"}
-	}
 	client := &http.Client{Timeout: 15 * time.Second}
+	if ref == "" {
+		endpoint := base + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repository)
+		body, err := fetchGitHubAPIResponse(client, endpoint)
+		if err != nil {
+			return nil, fmt.Errorf("resolve repository default branch: %w", err)
+		}
+		var metadata githubRepositoryMetadata
+		if err := json.Unmarshal(body, &metadata); err != nil {
+			return nil, fmt.Errorf("decode repository metadata: %w", err)
+		}
+		if metadata.DefaultBranch == "" {
+			return nil, fmt.Errorf("repository metadata has no default branch")
+		}
+		refs = []string{metadata.DefaultBranch}
+	}
 	var lastErr error
 	for _, currentRef := range refs {
 		endpoint := base + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repository) + "/git/trees/" + url.PathEscape(currentRef) + "?recursive=1"
-		request, err := http.NewRequest(http.MethodGet, endpoint, nil)
-		if err != nil {
-			return nil, err
-		}
-		request.Header.Set("Accept", "application/vnd.github+json")
-		request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-		token := os.Getenv("GITHUB_TOKEN")
-		if token == "" {
-			token = os.Getenv("GH_TOKEN")
-		}
-		if token != "" {
-			request.Header.Set("Authorization", "Bearer "+token)
-		}
-		response, err := client.Do(request)
+		body, err := fetchGitHubAPIResponse(client, endpoint)
 		if err != nil {
 			lastErr = err
-			continue
-		}
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, 8<<20))
-		response.Body.Close()
-		if readErr != nil {
-			lastErr = readErr
-			continue
-		}
-		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			lastErr = fmt.Errorf("Trees API returned HTTP %d", response.StatusCode)
 			continue
 		}
 		var tree githubTreeDocument
@@ -312,6 +475,35 @@ func fetchGitHubTree(entry lockfile.Entry) (*githubTreeDocument, error) {
 		lastErr = fmt.Errorf("Trees API returned no tree")
 	}
 	return nil, lastErr
+}
+
+func fetchGitHubAPIResponse(client *http.Client, endpoint string) ([]byte, error) {
+	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	token := os.Getenv("GITHUB_TOKEN")
+	if token == "" {
+		token = os.Getenv("GH_TOKEN")
+	}
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("GitHub API returned HTTP %d", response.StatusCode)
+	}
+	return body, nil
 }
 
 func githubRepository(entry lockfile.Entry) (string, string, bool) {
@@ -359,7 +551,8 @@ func updateProjectSkills(options updateOptions, cwd string, stdout, stderr io.Wr
 		return 0, true
 	}
 	groups := make(map[string][]updateItem)
-	var keys []string
+	wellKnownGroups := make(map[string][]updateItem)
+	var keys, wellKnownKeys []string
 	found := 0
 	failed := false
 	for name, entry := range lock.Skills {
@@ -368,7 +561,23 @@ func updateProjectSkills(options updateOptions, cwd string, stdout, stderr io.Wr
 		}
 		found++
 		sourceType, _ := entry.String("sourceType")
-		if sourceType == "local" || sourceType == "node_modules" || sourceType == "well-known" {
+		if sourceType == "well-known" {
+			baseURL, hasBaseURL := entry.String("sourceBaseUrl")
+			if !hasBaseURL || baseURL == "" {
+				baseURL, hasBaseURL = entry.String("sourceUrl")
+			}
+			digest, hasDigest := entry.String("wellKnownDigest")
+			if !hasBaseURL || baseURL == "" || !hasDigest || digest == "" {
+				fmt.Fprintf(stdout, "Skipping project skill %s: no supported well-known version metadata.\n", name)
+				continue
+			}
+			if _, exists := wellKnownGroups[baseURL]; !exists {
+				wellKnownKeys = append(wellKnownKeys, baseURL)
+			}
+			wellKnownGroups[baseURL] = append(wellKnownGroups[baseURL], updateItem{name: name, entry: entry})
+			continue
+		}
+		if sourceType == "local" || sourceType == "node_modules" {
 			continue
 		}
 		if skillPath, ok := entry.String("skillPath"); !ok || skillPath == "" {
@@ -387,7 +596,23 @@ func updateProjectSkills(options updateOptions, cwd string, stdout, stderr io.Wr
 		groups[input] = append(groups[input], updateItem{name: name, entry: entry})
 	}
 	sort.Strings(keys)
+	sort.Strings(wellKnownKeys)
 	changedAny := false
+	for _, baseURL := range wellKnownKeys {
+		items := wellKnownGroups[baseURL]
+		changed, checkErr := changedWellKnownItems(baseURL, items)
+		if checkErr != nil {
+			fmt.Fprintf(stdout, "Could not check well-known skills from %s: %v\n", baseURL, checkErr)
+			continue
+		}
+		if len(changed) == 0 {
+			continue
+		}
+		fmt.Fprintf(stdout, "Found %d project update(s) from %s.\n", len(changed), baseURL)
+		lockChanged, updateFailed := updateWellKnownItems(baseURL, changed, false, cwd, nil, lock, stdout, stderr)
+		changedAny = changedAny || lockChanged
+		failed = failed || updateFailed
+	}
 	for _, input := range keys {
 		items := groups[input]
 		changed := checkGroupWithPartialGit(items[0].entry, items, false, stdout, stderr, &failed)

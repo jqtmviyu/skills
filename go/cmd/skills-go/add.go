@@ -225,7 +225,10 @@ func runAdd(args []string, stdout, stderr io.Writer) int {
 		treeHash, _ := scan.GitTreeHash(candidate.Path)
 		wellKnownDigest := ""
 		if session.wellKnown {
-			wellKnownDigest, hashErr = computeWellKnownDigest(skillSource.Directory)
+			wellKnownDigest = session.wellKnownDigests[candidate.Name]
+			if wellKnownDigest == "" {
+				wellKnownDigest, hashErr = computeWellKnownDigest(skillSource.Directory)
+			}
 			if hashErr != nil {
 				fmt.Fprintf(stderr, "Warning: cannot compute well-known digest for %s: %v\n", candidate.Name, hashErr)
 			}
@@ -397,7 +400,7 @@ func selectAddSkills(candidates []skillscan.Candidate, sourceSelector string, op
 func matchingCandidates(candidates []skillscan.Candidate, selector string) []skillscan.Candidate {
 	var matches []skillscan.Candidate
 	for _, candidate := range candidates {
-		if strings.EqualFold(candidate.Name, selector) || strings.EqualFold(path.Base(candidate.Path), selector) {
+		if strings.EqualFold(candidate.Name, selector) {
 			matches = append(matches, candidate)
 		}
 	}

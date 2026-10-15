@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -161,6 +163,72 @@ func TestRemoveSpecificAgentKeepsSharedCanonicalSkillAndLockUntilLastAgent(t *te
 	}
 }
 
+func TestGlobalListAndRemoveHandleLegacyUniversalAgentPaths(t *testing.T) {
+	binary := buildCLI(t)
+	root := t.TempDir()
+	project, home := filepath.Join(root, "project"), filepath.Join(root, "home")
+	configHome := filepath.Join(root, "config")
+	legacySkill := filepath.Join(configHome, "agents", "skills", "legacy-alpha")
+	for _, directory := range []string{project, home, legacySkill, filepath.Join(home, ".agents")} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestSkill(t, legacySkill, "legacy-alpha")
+	lockPath := filepath.Join(home, ".agents", ".skill-lock.json")
+	lock := map[string]any{
+		"version":     3,
+		"futureField": map[string]any{"preserved": true},
+		"skills":      map[string]any{"legacy-alpha": map[string]any{"source": "legacy/repo", "sourceType": "github"}},
+	}
+	if err := os.WriteFile(lockPath, mustJSON(t, lock), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	environment := []string{"XDG_CONFIG_HOME=" + configHome}
+
+	stdout, stderr, exitCode := runCLIAtWithEnv(t, binary, project, home, "", environment, "list", "--global", "--json")
+	if exitCode != 0 {
+		t.Fatalf("global list exit = %d; stdout: %s; stderr: %s", exitCode, stdout, stderr)
+	}
+	var listed []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &listed); err != nil {
+		t.Fatalf("global list is not JSON: %v; stdout: %s", err, stdout)
+	}
+	if len(listed) != 1 || listed[0].Name != "legacy-alpha" {
+		t.Fatalf("global list = %#v, want the legacy agent-specific copy", listed)
+	}
+
+	stdout, stderr, exitCode = runCLIAtWithEnv(t, binary, project, home, "", environment, "remove", "legacy-alpha", "--global", "--agent", "amp", "--yes")
+	if exitCode != 0 {
+		t.Fatalf("remove Amp legacy path exit = %d; stdout: %s; stderr: %s", exitCode, stdout, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(legacySkill, "SKILL.md")); err != nil {
+		t.Fatalf("legacy copy shared with Replit was removed: %v", err)
+	}
+
+	stdout, stderr, exitCode = runCLIAtWithEnv(t, binary, project, home, "", environment, "remove", "--global", "--all")
+	if exitCode != 0 {
+		t.Fatalf("remove all legacy copies exit = %d; stdout: %s; stderr: %s", exitCode, stdout, stderr)
+	}
+	if _, err := os.Stat(legacySkill); !os.IsNotExist(err) {
+		t.Fatalf("safe removal left legacy global copy: %v", err)
+	}
+	lockData, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read updated Global lock: %v", err)
+	}
+	var updated map[string]json.RawMessage
+	if err := json.Unmarshal(lockData, &updated); err != nil {
+		t.Fatal(err)
+	}
+	var futureField map[string]bool
+	if err := json.Unmarshal(updated["futureField"], &futureField); err != nil || !futureField["preserved"] {
+		t.Errorf("removal lost unknown Global lock field: %s (error %v)", lockData, err)
+	}
+}
+
 func TestInstallAliasesRestoreLocalAndGitSkillsFromProjectLock(t *testing.T) {
 	binary := buildCLI(t)
 	root := t.TempDir()
@@ -248,17 +316,35 @@ func TestGlobalGitHubCheckUsesTreesMetadataAndLeavesLockUntouched(t *testing.T) 
 		"skills/alpha/references/ref.md": "stable support",
 		"unrelated/large.bin":            strings.Repeat("unrelated payload ", 2048),
 	})
-	var requestCount atomic.Int32
+	working := filepath.Join(root, "git-work")
+	gitTest(t, working, "checkout", "-qb", "feature/new")
+	if err := os.WriteFile(filepath.Join(working, "skills", "alpha", "SKILL.md"), []byte("---\nname: alpha\ndescription: default branch skill\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, working, "add", "skills/alpha/SKILL.md")
+	gitTest(t, working, "commit", "-qm", "default branch skill")
+	gitTest(t, working, "push", "-q", "origin", "HEAD:refs/heads/feature/new")
+	gitTest(t, "", "--git-dir="+fixture.Bare, "symbolic-ref", "HEAD", "refs/heads/feature/new")
+	var metadataRequests, treeRequests atomic.Int32
 	api := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		requestCount.Add(1)
-		if request.URL.Path != "/repos/test/repo/git/trees/main" || request.URL.Query().Get("recursive") != "1" {
-			t.Errorf("Trees API request = %s?%s", request.URL.Path, request.URL.RawQuery)
-		}
 		if request.Header.Get("Authorization") != "Bearer test-github-token" {
-			t.Errorf("Trees API authorization = %q, want environment token", request.Header.Get("Authorization"))
+			t.Errorf("GitHub API authorization = %q, want environment token", request.Header.Get("Authorization"))
 		}
 		response.Header().Set("Content-Type", "application/json")
-		_, _ = response.Write(githubTreeResponse(t, fixture.Bare, "main"))
+		switch request.URL.EscapedPath() {
+		case "/repos/test/repo":
+			metadataRequests.Add(1)
+			_, _ = response.Write([]byte(`{"default_branch":"feature/new"}`))
+		case "/repos/test/repo/git/trees/feature%2Fnew":
+			treeRequests.Add(1)
+			if request.URL.Query().Get("recursive") != "1" {
+				t.Errorf("Trees API query = %s, want recursive=1", request.URL.RawQuery)
+			}
+			_, _ = response.Write(githubTreeResponse(t, fixture.Bare, "feature/new"))
+		default:
+			t.Errorf("unexpected GitHub API route %s?%s", request.URL.EscapedPath(), request.URL.RawQuery)
+			http.NotFound(response, request)
+		}
 	}))
 	defer api.Close()
 
@@ -288,8 +374,8 @@ func TestGlobalGitHubCheckUsesTreesMetadataAndLeavesLockUntouched(t *testing.T) 
 	if exitCode != 0 {
 		t.Fatalf("global metadata check: exit %d; stdout: %s; stderr: %s", exitCode, stdout, stderr)
 	}
-	if requestCount.Load() != 1 {
-		t.Errorf("Trees API request count = %d, want one request", requestCount.Load())
+	if metadataRequests.Load() != 1 || treeRequests.Load() != 1 {
+		t.Errorf("GitHub API requests = metadata:%d tree:%d, want one default-branch lookup and one tree request", metadataRequests.Load(), treeRequests.Load())
 	}
 	after, err := os.ReadFile(lockPath)
 	if err != nil {
@@ -300,6 +386,68 @@ func TestGlobalGitHubCheckUsesTreesMetadataAndLeavesLockUntouched(t *testing.T) 
 	}
 	if _, err := os.Stat(trace); !os.IsNotExist(err) {
 		t.Errorf("successful Trees API check invoked Git; packet trace stat error = %v", err)
+	}
+}
+
+func TestGlobalGitHubCheckKeepsPinnedRefWithoutDefaultBranchLookup(t *testing.T) {
+	binary := buildCLI(t)
+	root := t.TempDir()
+	project, home := filepath.Join(root, "project"), filepath.Join(root, "home")
+	for _, directory := range []string{project, home} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixture := createGitHubFixture(t, root, home, map[string]string{
+		"skills/alpha/SKILL.md": "---\nname: alpha\ndescription: pinned branch\n---\n",
+	})
+	working := filepath.Join(root, "git-work")
+	gitTest(t, working, "checkout", "-qb", "feature/new")
+	if err := os.WriteFile(filepath.Join(working, "skills", "alpha", "SKILL.md"), []byte("---\nname: alpha\ndescription: other branch\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, working, "add", "skills/alpha/SKILL.md")
+	gitTest(t, working, "commit", "-qm", "other branch")
+	gitTest(t, working, "push", "-q", "origin", "HEAD:refs/heads/feature/new")
+
+	var metadataRequests, mainTreeRequests atomic.Int32
+	api := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.EscapedPath() {
+		case "/repos/test/repo":
+			metadataRequests.Add(1)
+			_, _ = response.Write([]byte(`{"default_branch":"feature/new"}`))
+		case "/repos/test/repo/git/trees/main":
+			mainTreeRequests.Add(1)
+			_, _ = response.Write(githubTreeResponse(t, fixture.Bare, "main"))
+		default:
+			t.Errorf("unexpected pinned-ref GitHub API route %s", request.URL.EscapedPath())
+			http.NotFound(response, request)
+		}
+	}))
+	defer api.Close()
+
+	stdout, stderr, exitCode := runCLIAt(t, binary, project, home, "", "add", "test/repo#main", "--skill", "alpha", "--agent", "claude-code", "--global", "--yes")
+	if exitCode != 0 {
+		t.Fatalf("install pinned Global skill: exit %d; stdout: %s; stderr: %s", exitCode, stdout, stderr)
+	}
+	lockPath := filepath.Join(home, ".agents", ".skill-lock.json")
+	before, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, exitCode = runCLIAtWithEnv(t, binary, project, home, "", []string{"SKILLS_GO_TEST_GITHUB_API_URL=" + api.URL}, "check", "--global")
+	if exitCode != 0 {
+		t.Fatalf("check pinned Global skill: exit %d; stdout: %s; stderr: %s", exitCode, stdout, stderr)
+	}
+	if metadataRequests.Load() != 0 || mainTreeRequests.Load() != 1 {
+		t.Errorf("pinned-ref API requests = metadata:%d main-tree:%d, want 0 and 1", metadataRequests.Load(), mainTreeRequests.Load())
+	}
+	after, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Error("pinned unchanged check rewrote the Global lock")
 	}
 }
 
@@ -489,6 +637,215 @@ func TestGlobalCheckResolvesMovedAndDeletedSkillsThroughPartialGit(t *testing.T)
 	}
 	if string(afterDelete) != string(beforeDelete) {
 		t.Error("noninteractive Global deletion changed the lock")
+	}
+}
+
+func TestWellKnownUpdatesUseStandardIndexAndReinstallChangedSkills(t *testing.T) {
+	binary := buildCLI(t)
+	for _, scope := range []struct {
+		name string
+		flag string
+		path func(project, home string) string
+	}{
+		{name: "global", flag: "--global", path: func(project, home string) string {
+			return filepath.Join(home, ".claude", "skills", "alpha", "SKILL.md")
+		}},
+		{name: "project", flag: "--project", path: func(project, home string) string {
+			return filepath.Join(project, ".claude", "skills", "alpha", "SKILL.md")
+		}},
+	} {
+		t.Run(scope.name, func(t *testing.T) {
+			root := t.TempDir()
+			project, home := filepath.Join(root, "project"), filepath.Join(root, "home")
+			for _, directory := range []string{project, home} {
+				if err := os.MkdirAll(directory, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var skillContent atomic.Value
+			skillContent.Store("---\nname: alpha\ndescription: initial well-known skill\n---\n\ninitial body\n")
+			var indexRequests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				response.Header().Set("Content-Type", "application/json")
+				switch request.URL.Path {
+				case "/.well-known/agent-skills/index.json":
+					indexRequests.Add(1)
+					_, _ = response.Write([]byte(`{"skills":[{"name":"alpha","description":"indexed alpha","files":["SKILL.md"]}]}`))
+				case "/.well-known/agent-skills/alpha/SKILL.md":
+					response.Header().Set("Content-Type", "text/markdown")
+					_, _ = response.Write([]byte(skillContent.Load().(string)))
+				default:
+					http.NotFound(response, request)
+				}
+			}))
+			defer server.Close()
+
+			stdout, stderr, exitCode := runCLIAt(t, binary, project, home, "", "add", server.URL, "--skill", "alpha", "--agent", "claude-code", "--copy", scope.flag, "--yes")
+			if exitCode != 0 {
+				t.Fatalf("add %s well-known skill: exit %d; stdout: %s; stderr: %s", scope.name, exitCode, stdout, stderr)
+			}
+			lockPath := filepath.Join(project, "skills-lock.json")
+			if scope.name == "global" {
+				lockPath = filepath.Join(home, ".agents", ".skill-lock.json")
+			}
+			lockData, err := os.ReadFile(lockPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var lock map[string]any
+			if err := json.Unmarshal(lockData, &lock); err != nil {
+				t.Fatal(err)
+			}
+			entries := lock["skills"].(map[string]any)
+			entry := entries["alpha"].(map[string]any)
+			entry["futureEntryField"] = "preserve me"
+			lock["futureTopLevelField"] = map[string]any{"preserved": true}
+			lockData = mustJSON(t, lock)
+			if err := os.WriteFile(lockPath, lockData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			beforeCheck, err := os.ReadFile(lockPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			indexCount := indexRequests.Load()
+			stdout, stderr, exitCode = runCLIAt(t, binary, project, home, "", "check", scope.flag)
+			if exitCode != 0 {
+				t.Fatalf("check unchanged %s well-known skill: exit %d; stdout: %s; stderr: %s", scope.name, exitCode, stdout, stderr)
+			}
+			if indexRequests.Load() <= indexCount {
+				t.Error("unchanged well-known check did not request the standard index")
+			}
+			afterCheck, err := os.ReadFile(lockPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(afterCheck) != string(beforeCheck) {
+				t.Error("unchanged well-known check rewrote its lock")
+			}
+
+			updatedContent := "---\nname: alpha\ndescription: updated well-known skill\n---\n\nupdated body\n"
+			skillContent.Store(updatedContent)
+			stdout, stderr, exitCode = runCLIAt(t, binary, project, home, "", "update", scope.flag, "--yes")
+			if exitCode != 0 {
+				t.Fatalf("update changed %s well-known skill: exit %d; stdout: %s; stderr: %s", scope.name, exitCode, stdout, stderr)
+			}
+			installed, err := os.ReadFile(scope.path(project, home))
+			if err != nil || string(installed) != updatedContent {
+				t.Fatalf("updated %s skill content = %q, error %v", scope.name, installed, err)
+			}
+			updatedLock, err := os.ReadFile(lockPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(updatedLock, &lock); err != nil {
+				t.Fatal(err)
+			}
+			if lock["futureTopLevelField"].(map[string]any)["preserved"] != true {
+				t.Errorf("well-known update lost unknown top-level lock field: %s", updatedLock)
+			}
+			updatedEntry := lock["skills"].(map[string]any)["alpha"].(map[string]any)
+			if updatedEntry["futureEntryField"] != "preserve me" {
+				t.Errorf("well-known update lost unknown entry lock field: %s", updatedLock)
+			}
+			if updatedEntry["wellKnownDigest"] == entry["wellKnownDigest"] {
+				t.Errorf("well-known update left stale digest %v", updatedEntry["wellKnownDigest"])
+			}
+			if scope.name == "project" && updatedEntry["computedHash"] == entry["computedHash"] {
+				t.Errorf("project well-known update left stale content hash %v", updatedEntry["computedHash"])
+			}
+		})
+	}
+}
+
+func TestWellKnownV2UpdatesUseAdvertisedArtifactDigest(t *testing.T) {
+	binary := buildCLI(t)
+	root := t.TempDir()
+	project, home := filepath.Join(root, "project"), filepath.Join(root, "home")
+	for _, directory := range []string{project, home} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var skillContent atomic.Value
+	skillContent.Store("---\nname: alpha\ndescription: v2 initial skill\n---\n")
+	var indexRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/.well-known/agent-skills/index.json":
+			indexRequests.Add(1)
+			content := []byte(skillContent.Load().(string))
+			digest := sha256.Sum256(content)
+			index := fmt.Sprintf(`{"$schema":%q,"skills":[{"name":"alpha","description":"v2 skill","type":"skill-md","url":"/.well-known/agent-skills/alpha/SKILL.md","digest":"sha256:%s"}]}`, wellKnownSchemaV2, hex.EncodeToString(digest[:]))
+			response.Header().Set("Content-Type", "application/json")
+			_, _ = response.Write([]byte(index))
+		case "/.well-known/agent-skills/alpha/SKILL.md":
+			_, _ = response.Write([]byte(skillContent.Load().(string)))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	stdout, stderr, exitCode := runCLIAt(t, binary, project, home, "", "add", server.URL, "--skill", "alpha", "--agent", "claude-code", "--copy", "--global", "--yes")
+	if exitCode != 0 {
+		t.Fatalf("add v2 well-known skill: exit %d; stdout: %s; stderr: %s", exitCode, stdout, stderr)
+	}
+	lockPath := filepath.Join(home, ".agents", ".skill-lock.json")
+	before, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lockDocument struct {
+		Skills map[string]map[string]any `json:"skills"`
+	}
+	if err := json.Unmarshal(before, &lockDocument); err != nil {
+		t.Fatal(err)
+	}
+	initialDigest := lockDocument.Skills["alpha"]["wellKnownDigest"]
+	content := []byte(skillContent.Load().(string))
+	initialHash := sha256.Sum256(content)
+	if initialDigest != "sha256:"+hex.EncodeToString(initialHash[:]) {
+		t.Fatalf("v2 lock digest = %v, want the advertised artifact digest", initialDigest)
+	}
+
+	indexCount := indexRequests.Load()
+	stdout, stderr, exitCode = runCLIAt(t, binary, project, home, "", "check", "--global")
+	if exitCode != 0 {
+		t.Fatalf("check unchanged v2 well-known skill: exit %d; stdout: %s; stderr: %s", exitCode, stdout, stderr)
+	}
+	if indexRequests.Load() <= indexCount {
+		t.Error("unchanged v2 check did not read the standard index")
+	}
+	afterCheck, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterCheck) != string(before) {
+		t.Error("unchanged v2 well-known check rewrote the Global lock")
+	}
+
+	updatedContent := "---\nname: alpha\ndescription: v2 updated skill\n---\n"
+	skillContent.Store(updatedContent)
+	stdout, stderr, exitCode = runCLIAt(t, binary, project, home, "", "update", "--global", "--yes")
+	if exitCode != 0 {
+		t.Fatalf("update changed v2 well-known skill: exit %d; stdout: %s; stderr: %s", exitCode, stdout, stderr)
+	}
+	installed, err := os.ReadFile(filepath.Join(home, ".claude", "skills", "alpha", "SKILL.md"))
+	if err != nil || string(installed) != updatedContent {
+		t.Fatalf("updated v2 skill content = %q, error %v", installed, err)
+	}
+	updatedLock, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(updatedLock, &lockDocument); err != nil {
+		t.Fatal(err)
+	}
+	updatedDigest := lockDocument.Skills["alpha"]["wellKnownDigest"]
+	updatedHash := sha256.Sum256([]byte(updatedContent))
+	if updatedDigest != "sha256:"+hex.EncodeToString(updatedHash[:]) || updatedDigest == initialDigest {
+		t.Errorf("updated v2 digest = %v, want the new advertised artifact digest", updatedDigest)
 	}
 }
 

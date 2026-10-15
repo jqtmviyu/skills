@@ -161,6 +161,12 @@ func runRemove(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintf(stderr, "skills-go: remove %s for %s: %v\n", name, id, removeErr)
 				failed = true
 			}
+			if options.global {
+				if removeErr := removeLegacyGlobalAgentCopy(name, id, targetAgents); removeErr != nil {
+					fmt.Fprintf(stderr, "skills-go: remove legacy %s for %s: %v\n", name, id, removeErr)
+					failed = true
+				}
+			}
 			if id == "eve" && !options.global {
 				for _, subagent := range agent.EveSubagents(cwd) {
 					_, removeErr = installer.RemoveAgentSkill(name, id, installer.Options{CWD: cwd, EveSubagent: subagent})
@@ -268,6 +274,38 @@ func addRemovalCandidate(bySanitized map[string]map[string]bool, name string) {
 	bySanitized[key][name] = true
 }
 
+func removeLegacyGlobalAgentCopy(name string, id agent.ID, selected []agent.ID) error {
+	if !agent.IsUniversal(id) {
+		return nil
+	}
+	config, ok := agent.ConfigFor(id)
+	if !ok || !config.SupportsGlobal || config.GlobalSkillsDir == "" {
+		return nil
+	}
+	canonical, err := installer.GetCanonicalPath(name, agent.UniversalID, installer.Options{Global: true})
+	if err != nil {
+		return err
+	}
+	legacy := filepath.Join(config.GlobalSkillsDir, agent.SanitizeInstallName(name))
+	if sameFilesystemPath(legacy, canonical) {
+		return nil
+	}
+
+	selectedSet := make(map[agent.ID]bool, len(selected))
+	for _, selectedID := range selected {
+		selectedSet[selectedID] = true
+	}
+	for _, other := range agent.Registry() {
+		if selectedSet[other.ID] || !other.SupportsGlobal || !sameFilesystemPath(other.GlobalSkillsDir, config.GlobalSkillsDir) {
+			continue
+		}
+		if hasSkillMarkdown(filepath.Join(other.GlobalSkillsDir, agent.SanitizeInstallName(name))) {
+			return nil
+		}
+	}
+	return os.RemoveAll(legacy)
+}
+
 func remainingAgentsUseSkill(name string, selected []agent.ID, global bool, cwd string) bool {
 	selectedSet := make(map[agent.ID]bool)
 	for _, id := range selected {
@@ -282,7 +320,14 @@ func remainingAgentsUseSkill(name string, selected []agent.ID, global bool, cwd 
 		if selectedSet[id] || (global && !config.SupportsGlobal) {
 			continue
 		}
-		if agent.IsUniversal(id) && !detected[id] {
+		if global && agent.IsUniversal(id) && config.GlobalSkillsDir != "" {
+			legacy := filepath.Join(config.GlobalSkillsDir, agent.SanitizeInstallName(name))
+			canonical, canonicalErr := installer.GetCanonicalPath(name, agent.UniversalID, installer.Options{Global: true, CWD: cwd})
+			if (canonicalErr != nil || !sameFilesystemPath(legacy, canonical)) && hasSkillMarkdown(legacy) {
+				return true
+			}
+		}
+		if agent.IsUniversal(id) && !detected[id] && !global {
 			continue
 		}
 		target, err := agent.ResolveTarget(id, name, agent.TargetOptions{Global: global, CWD: cwd})

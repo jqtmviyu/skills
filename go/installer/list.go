@@ -64,11 +64,21 @@ func ListInstalledSkills(options ListOptions) ([]InstalledSkill, error) {
 		agent agent.ID
 	}
 	targets := []directoryTarget{{path: canonical}}
+	seenLegacyGlobalDirs := make(map[string]bool)
 	for _, config := range agent.Registry() {
 		if filtered && !allowed[config.ID] {
 			continue
 		}
 		if options.Global && !config.SupportsGlobal {
+			continue
+		}
+		if options.Global && agent.IsUniversal(config.ID) {
+			legacyDir := config.GlobalSkillsDir
+			if legacyDir == "" || samePath(legacyDir, canonical) || seenLegacyGlobalDirs[legacyDir] {
+				continue
+			}
+			seenLegacyGlobalDirs[legacyDir] = true
+			targets = append(targets, directoryTarget{path: legacyDir, agent: config.ID})
 			continue
 		}
 		if agent.IsUniversal(config.ID) && !detected[config.ID] {

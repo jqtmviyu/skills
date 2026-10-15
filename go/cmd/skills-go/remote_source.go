@@ -29,11 +29,12 @@ const (
 )
 
 type addSourceSession struct {
-	scan      *skillscan.Scan
-	source    skillscan.Source
-	tempDir   string
-	direct    bool
-	wellKnown bool
+	scan             *skillscan.Scan
+	source           skillscan.Source
+	tempDir          string
+	direct           bool
+	wellKnown        bool
+	wellKnownDigests map[string]string
 }
 
 func (session *addSourceSession) Close() {
@@ -55,8 +56,9 @@ func openAddSource(ctx context.Context, input string, options skillscan.Options)
 			return nil, fmt.Errorf("create download directory: %w", err)
 		}
 		found := false
+		var wellKnownDigests map[string]string
 		if !isDirectArtifactURL(input) {
-			found, err = fetchWellKnownSource(input, tempDir)
+			found, wellKnownDigests, err = fetchWellKnownSource(input, tempDir)
 			if err != nil {
 				_ = os.RemoveAll(tempDir)
 				return nil, err
@@ -75,7 +77,8 @@ func openAddSource(ctx context.Context, input string, options skillscan.Options)
 		}
 		return &addSourceSession{
 			scan: scan, tempDir: tempDir, direct: !found, wellKnown: found,
-			source: skillscan.Source{Kind: skillscan.GitSource, URL: input},
+			wellKnownDigests: wellKnownDigests,
+			source:           skillscan.Source{Kind: skillscan.GitSource, URL: input},
 		}, nil
 	}
 	scan, err := skillscan.Open(ctx, input, options)
@@ -135,15 +138,21 @@ func isDirectArtifactURL(input string) bool {
 	return false
 }
 
-func fetchWellKnownSource(input, destination string) (bool, error) {
+type wellKnownIndexDocument struct {
+	URL           string
+	BaseURL       string
+	WellKnownPath string
+	Schema        string
+	Skills        []json.RawMessage
+}
+
+func fetchWellKnownIndex(client *http.Client, input string) (*wellKnownIndexDocument, error) {
 	parsed, err := url.Parse(input)
 	if err != nil {
-		return false, fmt.Errorf("invalid HTTP source %q: %w", input, err)
+		return nil, fmt.Errorf("invalid HTTP source %q: %w", input, err)
 	}
 	basePath := strings.TrimSuffix(parsed.Path, "/")
-	wellKnownPaths := []string{".well-known/agent-skills", ".well-known/skills"}
-	client := &http.Client{Timeout: 10 * time.Second}
-	for _, wellKnownPath := range wellKnownPaths {
+	for _, wellKnownPath := range []string{".well-known/agent-skills", ".well-known/skills"} {
 		candidates := []string{joinURLPath(parsed, basePath, wellKnownPath, "index.json")}
 		if basePath != "" {
 			candidates = append(candidates, joinURLPath(parsed, "", wellKnownPath, "index.json"))
@@ -157,26 +166,119 @@ func fetchWellKnownSource(input, destination string) (bool, error) {
 				Schema string            `json:"$schema"`
 				Skills []json.RawMessage `json:"skills"`
 			}
-			if json.Unmarshal(body, &index) != nil || len(index.Skills) == 0 {
+			if json.Unmarshal(body, &index) != nil || len(index.Skills) == 0 || (index.Schema != "" && index.Schema != wellKnownSchemaV2) {
 				continue
 			}
 			indexParsed, _ := url.Parse(indexURL)
 			indexBase := indexParsed.Scheme + "://" + indexParsed.Host + strings.TrimSuffix(indexParsed.Path, "/"+wellKnownPath+"/index.json")
-			if index.Schema == "" {
-				if err := fetchLegacyWellKnown(client, destination, indexBase, wellKnownPath, index.Skills); err != nil || !containsSkillMarkdown(destination) {
-					continue
-				}
-				return true, nil
-			}
-			if index.Schema == wellKnownSchemaV2 {
-				if err := fetchV2WellKnown(client, destination, indexURL, index.Skills); err != nil || !containsSkillMarkdown(destination) {
-					continue
-				}
-				return true, nil
-			}
+			return &wellKnownIndexDocument{
+				URL: indexURL, BaseURL: indexBase, WellKnownPath: wellKnownPath,
+				Schema: index.Schema, Skills: index.Skills,
+			}, nil
 		}
 	}
-	return false, nil
+	return nil, nil
+}
+
+func fetchWellKnownSource(input, destination string) (bool, map[string]string, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	index, err := fetchWellKnownIndex(client, input)
+	if err != nil || index == nil {
+		return false, nil, err
+	}
+	if index.Schema == "" {
+		if err := fetchLegacyWellKnown(client, destination, index.BaseURL, index.WellKnownPath, index.Skills); err != nil || !containsSkillMarkdown(destination) {
+			return false, nil, nil
+		}
+		return true, nil, nil
+	}
+	if index.Schema == wellKnownSchemaV2 {
+		if err := fetchV2WellKnown(client, destination, index.URL, index.Skills); err != nil || !containsSkillMarkdown(destination) {
+			return false, nil, nil
+		}
+		return true, wellKnownIndexDigests(index), nil
+	}
+	return false, nil, nil
+}
+
+func wellKnownIndexDigests(index *wellKnownIndexDocument) map[string]string {
+	if index == nil || index.Schema != wellKnownSchemaV2 {
+		return nil
+	}
+	digests := make(map[string]string)
+	for _, raw := range index.Skills {
+		var entry struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Digest      string `json:"digest"`
+		}
+		if json.Unmarshal(raw, &entry) == nil && validWellKnownSkillName(entry.Name) && entry.Description != "" {
+			digests[entry.Name] = entry.Digest
+		}
+	}
+	return digests
+}
+
+func fetchWellKnownDigests(input string, names []string) (map[string]string, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	index, err := fetchWellKnownIndex(client, input)
+	if err != nil {
+		return nil, err
+	}
+	if index == nil {
+		return nil, fmt.Errorf("well-known skills index not found at %s", input)
+	}
+	wanted := make(map[string]bool, len(names))
+	for _, name := range names {
+		wanted[name] = true
+	}
+	entries := make(map[string]json.RawMessage, len(names))
+	for _, raw := range index.Skills {
+		var entry struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(raw, &entry) == nil && wanted[entry.Name] {
+			entries[entry.Name] = raw
+		}
+	}
+	if index.Schema == wellKnownSchemaV2 {
+		allDigests := wellKnownIndexDigests(index)
+		digests := make(map[string]string, len(names))
+		for name := range wanted {
+			if digest, ok := allDigests[name]; ok {
+				digests[name] = digest
+			}
+		}
+		return digests, nil
+	}
+	if index.Schema != "" {
+		return nil, fmt.Errorf("unsupported well-known skills schema %q", index.Schema)
+	}
+	destination, err := os.MkdirTemp("", "skills-well-known-check-")
+	if err != nil {
+		return nil, fmt.Errorf("create well-known check directory: %w", err)
+	}
+	defer os.RemoveAll(destination)
+	digests := make(map[string]string, len(names))
+	for _, name := range names {
+		raw, ok := entries[name]
+		if !ok {
+			continue
+		}
+		if err := fetchLegacyWellKnown(client, destination, index.BaseURL, index.WellKnownPath, []json.RawMessage{raw}); err != nil {
+			return nil, err
+		}
+		skillDirectory := filepath.Join(destination, "skills", name)
+		if !hasSkillMarkdown(skillDirectory) {
+			return nil, fmt.Errorf("cannot fetch well-known skill %s from %s", name, input)
+		}
+		digest, err := computeWellKnownDigest(skillDirectory)
+		if err != nil {
+			return nil, err
+		}
+		digests[name] = digest
+	}
+	return digests, nil
 }
 
 func containsSkillMarkdown(root string) bool {

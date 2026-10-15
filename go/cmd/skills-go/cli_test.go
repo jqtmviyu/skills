@@ -241,6 +241,67 @@ func TestAddSupportsLocalGitFileURLOffline(t *testing.T) {
 	}
 }
 
+func TestAddSelectorsMatchSkillMetadataNameNotDirectoryBasename(t *testing.T) {
+	binary := buildCLI(t)
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	fixture := createGitHubFixture(t, root, home, map[string]string{
+		"folder/SKILL.md": "---\nname: actual-skill-name\ndescription: metadata is authoritative\n---\n",
+	})
+
+	for _, test := range []struct {
+		name        string
+		selector    string
+		wrongSyntax bool
+	}{
+		{name: "skill option rejects directory basename", selector: "folder", wrongSyntax: true},
+		{name: "skill option matches metadata name", selector: "actual-skill-name"},
+		{name: "at selector rejects directory basename", selector: "folder", wrongSyntax: true},
+		{name: "at selector matches metadata name", selector: "actual-skill-name"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			project := filepath.Join(root, strings.ReplaceAll(test.name, " ", "-"))
+			if err := os.MkdirAll(project, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			source := "file://" + filepath.ToSlash(fixture.Bare) + "#main"
+			args := []string{"add", source, "--agent", "claude-code", "--copy", "--yes"}
+			if strings.Contains(test.name, "at selector") {
+				args[1] = source + "@" + test.selector
+			} else {
+				args = append(args, "--skill", test.selector)
+			}
+			if test.wrongSyntax {
+				args = append(args, "--json")
+			}
+			stdout, stderr, exitCode := runCLIAt(t, binary, project, home, "", args...)
+			installed := filepath.Join(project, ".claude", "skills", "actual-skill-name", "SKILL.md")
+			if test.wrongSyntax {
+				if exitCode == 0 {
+					t.Fatalf("directory basename unexpectedly matched; stdout: %s; stderr: %s", stdout, stderr)
+				}
+				var results []struct {
+					Name   string `json:"name"`
+					Status string `json:"status"`
+				}
+				if err := json.Unmarshal([]byte(stdout), &results); err != nil || len(results) != 1 || results[0].Name != test.selector || results[0].Status != "skipped" {
+					t.Fatalf("unmatched selector result = %#v, error %v; want a skipped JSON result", results, err)
+				}
+				if _, err := os.Stat(installed); !os.IsNotExist(err) {
+					t.Fatalf("unmatched directory alias installed a skill: %v", err)
+				}
+				return
+			}
+			if exitCode != 0 {
+				t.Fatalf("metadata selector exit = %d; stdout: %s; stderr: %s", exitCode, stdout, stderr)
+			}
+			if _, err := os.Stat(installed); err != nil {
+				t.Fatalf("metadata selector did not install skill: %v", err)
+			}
+		})
+	}
+}
+
 func TestAddSupportsGitLabHTTPSAndSSHSourcesOffline(t *testing.T) {
 	binary := buildCLI(t)
 	root := t.TempDir()
