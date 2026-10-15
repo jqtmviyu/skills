@@ -384,6 +384,39 @@ func TestComputeProjectHashMatchesNodeLocalePathOrdering(t *testing.T) {
 	}
 }
 
+func TestComputeProjectHashUsesProcessDefaultLocaleLikeNode(t *testing.T) {
+	project := t.TempDir()
+	for name, content := range map[string]string{
+		"a.txt": "a", "z.txt": "z", "å.txt": "å", "ä.txt": "ä", "ö.txt": "ö",
+	} {
+		if err := os.WriteFile(filepath.Join(project, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, fixture := range []struct {
+		name string
+		lang string
+		want string
+	}{
+		{name: "English", lang: "en_US.UTF-8", want: "d2bf3a88249ec59452a9677290d879ca7152ad17567cfc3f52dd73eaf8389cc5"},
+		{name: "Swedish", lang: "sv_SE.UTF-8", want: "9e420fab8af3ef2df1b62e0ede823dae7cc5529dff6d1a88be6c12a88311383b"},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			t.Setenv("LC_ALL", fixture.lang)
+			t.Setenv("LC_COLLATE", "")
+			t.Setenv("LANG", "")
+			got, err := lockfile.ComputeProjectHash(project)
+			if err != nil {
+				t.Fatalf("ComputeProjectHash() error = %v", err)
+			}
+			if got != fixture.want {
+				t.Errorf("ComputeProjectHash() = %q, want Node localeCompare hash %q", got, fixture.want)
+			}
+		})
+	}
+}
+
 func containsJSONValue(t *testing.T, raw json.RawMessage, want string) bool {
 	t.Helper()
 	var got any

@@ -335,8 +335,27 @@ func emptyProject() *ProjectLock {
 	return &ProjectLock{Version: ProjectVersion, Skills: make(map[string]Entry)}
 }
 
+func defaultLocale() language.Tag {
+	for _, raw := range []string{os.Getenv("LC_ALL"), os.Getenv("LC_COLLATE"), os.Getenv("LANG")} {
+		if raw == "" {
+			continue
+		}
+		locale := strings.SplitN(raw, "@", 2)[0]
+		locale = strings.SplitN(locale, ".", 2)[0]
+		if locale == "C" || locale == "POSIX" {
+			return language.English
+		}
+		locale = strings.ReplaceAll(locale, "_", "-")
+		if tag, err := language.Parse(locale); err == nil {
+			return tag
+		}
+	}
+	return language.English
+}
+
 // ComputeProjectHash computes the Project lock SHA-256 from sorted relative
 // file paths followed by file contents, excluding .git and node_modules trees.
+// Its path collation follows the process locale used by Node's localeCompare.
 func ComputeProjectHash(skillDir string) (string, error) {
 	var paths []string
 	err := filepath.WalkDir(skillDir, func(path string, entry fs.DirEntry, err error) error {
@@ -361,8 +380,8 @@ func ComputeProjectHash(skillDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("walk skill directory %q: %w", skillDir, err)
 	}
-	collator := collate.New(language.English)
-	sort.Slice(paths, func(i, j int) bool {
+	collator := collate.New(defaultLocale())
+	sort.SliceStable(paths, func(i, j int) bool {
 		return collator.CompareString(paths[i], paths[j]) < 0
 	})
 
