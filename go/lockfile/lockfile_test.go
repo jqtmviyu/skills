@@ -415,6 +415,19 @@ func TestComputeProjectHashUsesProcessDefaultLocaleLikeNode(t *testing.T) {
 			}
 		})
 	}
+	t.Run("LC_COLLATE does not override LANG", func(t *testing.T) {
+		t.Setenv("LC_ALL", "")
+		t.Setenv("LC_COLLATE", "sv_SE.UTF-8")
+		t.Setenv("LANG", "en_US.UTF-8")
+		got, err := lockfile.ComputeProjectHash(project)
+		if err != nil {
+			t.Fatalf("ComputeProjectHash() error = %v", err)
+		}
+		const nodeLangHash = "d2bf3a88249ec59452a9677290d879ca7152ad17567cfc3f52dd73eaf8389cc5"
+		if got != nodeLangHash {
+			t.Errorf("ComputeProjectHash() = %q, want Node LANG-based hash %q", got, nodeLangHash)
+		}
+	})
 }
 
 func containsJSONValue(t *testing.T, raw json.RawMessage, want string) bool {

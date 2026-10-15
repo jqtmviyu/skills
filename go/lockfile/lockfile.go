@@ -336,7 +336,7 @@ func emptyProject() *ProjectLock {
 }
 
 func defaultLocale() language.Tag {
-	for _, raw := range []string{os.Getenv("LC_ALL"), os.Getenv("LC_COLLATE"), os.Getenv("LANG")} {
+	for _, raw := range []string{os.Getenv("LC_ALL"), os.Getenv("LANG")} {
 		if raw == "" {
 			continue
 		}
