@@ -61,6 +61,32 @@ func TestReadGlobalSupportsHistoricalVersionsWithoutRewriting(t *testing.T) {
 	}
 }
 
+func TestReadGlobalRejectsUnsupportedFutureVersionWithoutRewriting(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", "")
+	lockPath := filepath.Join(home, ".agents", ".skill-lock.json")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fixture := `{"version":4,"skills":{"my-skill":{"source":"acme/repo"}}}`
+	if err := os.WriteFile(lockPath, []byte(fixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := lockfile.ReadGlobal()
+	if err == nil {
+		t.Fatal("ReadGlobal() accepted unsupported version 4; want an error to prevent accidental overwrite")
+	}
+	after, readErr := os.ReadFile(lockPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(after) != fixture {
+		t.Errorf("reading unsupported future lock rewrote file: got %s, want %s", after, fixture)
+	}
+}
+
 func TestWriteGlobalNormalizesVersionAndPreservesUnknownFields(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -271,6 +297,23 @@ func TestGlobalPathUsesXDGStateHome(t *testing.T) {
 	}
 }
 
+func TestSkillFolderTreeHashMatchesGitHubDirectoryEntries(t *testing.T) {
+	entries := []lockfile.TreeEntry{
+		{Path: "skills/demo", Type: "tree", SHA: "skill-tree-sha"},
+		{Path: "skills/demo/SKILL.md", Type: "blob", SHA: "skill-file-sha"},
+		{Path: "skills/demo-nested", Type: "tree", SHA: "other-tree-sha"},
+	}
+	if got, ok := lockfile.SkillFolderTreeHash("root-tree-sha", entries, `skills\demo\SKILL.md`); !ok || got != "skill-tree-sha" {
+		t.Errorf("nested skill tree hash = (%q, %t), want (skill-tree-sha, true)", got, ok)
+	}
+	if got, ok := lockfile.SkillFolderTreeHash("root-tree-sha", entries, "SKILL.md"); !ok || got != "root-tree-sha" {
+		t.Errorf("root skill tree hash = (%q, %t), want (root-tree-sha, true)", got, ok)
+	}
+	if got, ok := lockfile.SkillFolderTreeHash("root-tree-sha", entries, "skills/missing/SKILL.md"); ok || got != "" {
+		t.Errorf("missing skill tree hash = (%q, %t), want empty and false", got, ok)
+	}
+}
+
 func TestComputeProjectHashMatchesContentHashContractAndExclusions(t *testing.T) {
 	project := t.TempDir()
 	for name, content := range map[string]string{
@@ -292,7 +335,7 @@ func TestComputeProjectHashMatchesContentHashContractAndExclusions(t *testing.T)
 	if err != nil {
 		t.Fatalf("ComputeProjectHash() error = %v", err)
 	}
-	const want = "23e3ac57a5516e9b718fb72143ce66fdd8b75863196ee634cb58c5c25de26b9e"
+	const want = "bcdedf814ba342c3bc53033cd10ff847772055e78cf0630dffc9ada465f314bb"
 	if got != want {
 		t.Errorf("ComputeProjectHash() = %q, want %q", got, want)
 	}
@@ -320,6 +363,24 @@ func TestComputeProjectHashMatchesContentHashContractAndExclusions(t *testing.T)
 	}
 	if changed == want {
 		t.Error("hash did not change when an included file changed")
+	}
+}
+
+func TestComputeProjectHashMatchesNodeLocalePathOrdering(t *testing.T) {
+	project := t.TempDir()
+	for name := range map[string]struct{}{"A.txt": {}, "a.md": {}, "_": {}, "-": {}, "0": {}, "z": {}} {
+		if err := os.WriteFile(filepath.Join(project, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := lockfile.ComputeProjectHash(project)
+	if err != nil {
+		t.Fatalf("ComputeProjectHash() error = %v", err)
+	}
+	const nodeLocaleCompareHash = "65fc5c5dbc0410fef92d83298b66acc61a1d8f20752b6a0c9c1e62d38d601f26"
+	if got != nodeLocaleCompareHash {
+		t.Errorf("ComputeProjectHash() = %q, want Node localeCompare contract %q", got, nodeLocaleCompareHash)
 	}
 }
 

@@ -12,6 +12,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"golang.org/x/text/collate"
+	"golang.org/x/text/language"
 )
 
 const (
@@ -25,6 +28,35 @@ const (
 // Entry contains the fields for a single skill and retains fields unknown to
 // this version of the CLI when a lock is read and written again.
 type Entry map[string]json.RawMessage
+
+// TreeEntry is a directory or file record from GitHub's recursive Git Trees API.
+type TreeEntry struct {
+	Path string
+	Type string
+	SHA  string
+}
+
+// SkillFolderTreeHash returns the Git tree SHA for the directory containing a
+// skill's SKILL.md path. A root-level skill uses the repository root tree SHA.
+func SkillFolderTreeHash(rootSHA string, entries []TreeEntry, skillPath string) (string, bool) {
+	folderPath := strings.ReplaceAll(skillPath, `\`, "/")
+	lowerPath := strings.ToLower(folderPath)
+	if strings.HasSuffix(lowerPath, "/skill.md") {
+		folderPath = folderPath[:len(folderPath)-len("/SKILL.md")]
+	} else if strings.HasSuffix(lowerPath, "skill.md") {
+		folderPath = folderPath[:len(folderPath)-len("SKILL.md")]
+	}
+	folderPath = strings.TrimSuffix(folderPath, "/")
+	if folderPath == "" {
+		return rootSHA, true
+	}
+	for _, entry := range entries {
+		if entry.Type == "tree" && entry.Path == folderPath {
+			return entry.SHA, true
+		}
+	}
+	return "", false
+}
 
 // String returns a string-valued entry field.
 func (entry Entry) String(key string) (string, bool) {
@@ -115,6 +147,9 @@ func ReadGlobal() (*GlobalLock, error) {
 	}
 	if doc == nil || doc.version < 1 {
 		return emptyGlobal(), nil
+	}
+	if doc.version > GlobalVersion {
+		return nil, fmt.Errorf("unsupported global lock version %d", doc.version)
 	}
 	return &GlobalLock{Version: doc.version, Skills: doc.skills, fields: doc.fields}, nil
 }
@@ -326,7 +361,10 @@ func ComputeProjectHash(skillDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("walk skill directory %q: %w", skillDir, err)
 	}
-	sort.Strings(paths)
+	collator := collate.New(language.English)
+	sort.Slice(paths, func(i, j int) bool {
+		return collator.CompareString(paths[i], paths[j]) < 0
+	})
 
 	hash := sha256.New()
 	for _, relativePath := range paths {
