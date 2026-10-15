@@ -1,6 +1,6 @@
 # Add, Use, and Init Commands
 
-Status: ready-for-agent
+Status: claimed
 Blocked by: 04
 
 ## User outcome
