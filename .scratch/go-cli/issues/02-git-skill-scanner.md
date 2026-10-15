@@ -1,6 +1,6 @@
 # Git Skill Scanner with Partial Fetch
 
-Status: ready-for-agent
+Status: claimed
 Blocked by: 01
 
 ## User outcome
