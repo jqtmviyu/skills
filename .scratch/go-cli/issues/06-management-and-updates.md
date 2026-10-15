@@ -1,6 +1,6 @@
 # List, Remove, Restore, and Update Commands
 
-Status: ready-for-agent
+Status: claimed
 Blocked by: 03, 05
 
 ## User outcome
