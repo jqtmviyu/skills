@@ -1,6 +1,6 @@
 # Go CLI Foundation
 
-Status: ready-for-agent
+Status: resolved
 
 ## User outcome
 
