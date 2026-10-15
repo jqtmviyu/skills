@@ -1,6 +1,6 @@
 # Lock Compatibility and Hash Contracts
 
-Status: resolved
+Status: claimed
 Blocked by: 01
 
 ## User outcome
