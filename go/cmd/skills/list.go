@@ -125,45 +125,162 @@ func runList(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	if len(results) == 0 {
-		label := "project"
-		if options.global {
-			label = "global"
-		}
-		fmt.Fprintf(stdout, "No %s skills found.\n", label)
-		return 0
+	writeListText(stdout, results, options.global, cwd, listColorEnabled(stdout))
+	return 0
+}
+
+func writeListText(output io.Writer, results []listResult, global bool, cwd string, colored bool) {
+	scope := "Project"
+	if global {
+		scope = "Global"
 	}
-	groups := make(map[string][]listResult)
+	if len(results) == 0 {
+		fmt.Fprintln(output, listPaint("No "+strings.ToLower(scope)+" skills found.", "\x1b[38;5;102m", colored))
+		if global {
+			fmt.Fprintln(output, listPaint("Try listing project skills without -g", "\x1b[38;5;102m", colored))
+		} else {
+			fmt.Fprintln(output, listPaint("Try listing global skills with -g", "\x1b[38;5;102m", colored))
+		}
+		return
+	}
+
+	fmt.Fprintln(output, listPaint(scope+" Skills", "\x1b[1m", colored))
+	fmt.Fprintln(output)
+
+	grouped := make(map[string][]listResult)
+	ungrouped := make([]listResult, 0, len(results))
 	var groupNames []string
 	for _, result := range results {
 		group := ""
 		if result.PluginName != nil {
-			group = *result.PluginName
+			group = sanitizeListCell(*result.PluginName)
 		}
-		if _, exists := groups[group]; !exists {
+		if group == "" {
+			ungrouped = append(ungrouped, result)
+			continue
+		}
+		if _, exists := grouped[group]; !exists {
 			groupNames = append(groupNames, group)
 		}
-		groups[group] = append(groups[group], result)
+		grouped[group] = append(grouped[group], result)
 	}
 	sort.Strings(groupNames)
-	if len(groups[""]) > 0 {
-		groupNames = append(groupNames, "")
-	}
+	hasGroups := len(groupNames) > 0
 	for _, group := range groupNames {
-		if group != "" {
-			fmt.Fprintf(stdout, "%s\n", titleCase(group))
-		} else if len(groups) > 1 {
-			fmt.Fprintln(stdout, "General")
+		fmt.Fprintln(output, listPaint(titleCase(group), "\x1b[1m", colored))
+		writeListRows(output, grouped[group], "  ", cwd, colored)
+		fmt.Fprintln(output)
+	}
+	if len(ungrouped) > 0 {
+		indent := ""
+		if hasGroups {
+			fmt.Fprintln(output, listPaint("General", "\x1b[1m", colored))
+			indent = "  "
 		}
-		for _, result := range groups[group] {
-			source := "local"
-			if result.Source != nil {
-				source = *result.Source
-			}
-			fmt.Fprintf(stdout, "%s\t%s\tAgents: %s\tSource: %s\n", result.Name, filepath.Clean(result.Path), strings.Join(result.Agents, ", "), source)
+		writeListRows(output, ungrouped, indent, cwd, colored)
+		fmt.Fprintln(output)
+	}
+}
+
+func writeListRows(output io.Writer, results []listResult, indent, cwd string, colored bool) {
+	home, _ := os.UserHomeDir()
+	maxNameLength, maxPathLength := 0, 0
+	names, paths := make([]string, len(results)), make([]string, len(results))
+	for index, result := range results {
+		names[index] = sanitizeListCell(result.Name)
+		paths[index] = shortenListPath(result.Path, cwd, home)
+		if length := len([]rune(names[index])); length > maxNameLength {
+			maxNameLength = length
+		}
+		if length := len([]rune(paths[index])); length > maxPathLength {
+			maxPathLength = length
 		}
 	}
-	return 0
+	for index, result := range results {
+		name := padListCell(names[index], maxNameLength)
+		path := padListCell(paths[index], maxPathLength)
+		agents := formatListAgents(result.Agents, colored)
+		source := "local"
+		if result.Source != nil {
+			source = sanitizeListCell(*result.Source)
+		}
+		fmt.Fprintf(output, "%s%s %s\n", indent, listPaint(name, "\x1b[36m", colored), listPaint(path, "\x1b[38;5;102m", colored))
+		fmt.Fprintf(output, "%s  %s %s  %s %s\n", indent, listPaint("Agents:", "\x1b[38;5;102m", colored), agents, listPaint("Source:", "\x1b[38;5;102m", colored), source)
+	}
+}
+
+func formatListAgents(agents []string, colored bool) string {
+	if len(agents) == 0 {
+		return listPaint("not linked", "\x1b[33m", colored)
+	}
+	labels := make([]string, 0, len(agents))
+	limit := len(agents)
+	if limit > 5 {
+		limit = 5
+	}
+	for _, agent := range agents[:limit] {
+		labels = append(labels, sanitizeListCell(agent))
+	}
+	formatted := strings.Join(labels, ", ")
+	if remaining := len(agents) - limit; remaining > 0 {
+		formatted += fmt.Sprintf(" +%d more", remaining)
+	}
+	return formatted
+}
+
+func listPaint(value, code string, enabled bool) string {
+	if !enabled {
+		return value
+	}
+	return code + value + "\x1b[0m"
+}
+
+func listColorEnabled(output io.Writer) bool {
+	if _, disabled := os.LookupEnv("NO_COLOR"); disabled || strings.EqualFold(os.Getenv("TERM"), "dumb") {
+		return false
+	}
+	if force := os.Getenv("FORCE_COLOR"); force != "" && force != "0" {
+		return true
+	}
+	file, ok := output.(*os.File)
+	return ok && isTerminal(file)
+}
+
+func shortenListPath(fullPath, cwd, home string) string {
+	fullPath = filepath.Clean(fullPath)
+	for _, root := range []struct {
+		path   string
+		prefix string
+	}{{home, "~"}, {cwd, "."}} {
+		if root.path == "" {
+			continue
+		}
+		relative, err := filepath.Rel(root.path, fullPath)
+		if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+			continue
+		}
+		if relative == "." {
+			return root.prefix
+		}
+		return filepath.Join(root.prefix, relative)
+	}
+	return fullPath
+}
+
+func sanitizeListCell(value string) string {
+	return strings.Map(func(character rune) rune {
+		if character == '\n' || character == '\r' || character == '\t' || character < 0x20 || character == 0x7f {
+			return ' '
+		}
+		return character
+	}, value)
+}
+
+func padListCell(value string, width int) string {
+	if length := len([]rune(value)); length < width {
+		return value + strings.Repeat(" ", width-length)
+	}
+	return value
 }
 
 func findLockEntry(skills map[string]lockfile.Entry, name string) (lockfile.Entry, bool) {

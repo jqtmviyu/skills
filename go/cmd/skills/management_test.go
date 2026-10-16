@@ -1388,3 +1388,124 @@ func mustJSON(t *testing.T, value any) []byte {
 	}
 	return encoded
 }
+
+func TestGlobalListTextUsesReadableRowsAndHomeShortcut(t *testing.T) {
+	binary := buildCLI(t)
+	root := t.TempDir()
+	project, home := filepath.Join(root, "project"), filepath.Join(root, "home")
+	skillDir := filepath.Join(home, ".agents", "skills", "alpha")
+	for _, directory := range []string{project, skillDir} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestSkill(t, skillDir, "alpha")
+
+	stdout, stderr, exitCode := runCLIAt(t, binary, project, home, "", "ls", "-g")
+	if exitCode != 0 {
+		t.Fatalf("global list exit = %d; stdout: %s; stderr: %s", exitCode, stdout, stderr)
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	if len(lines) < 4 || lines[0] != "Global Skills" {
+		t.Fatalf("global list layout = %q, want a heading and two lines per skill", stdout)
+	}
+	if !strings.Contains(stdout, "alpha") || !strings.Contains(stdout, "~/.agents/skills/alpha") {
+		t.Fatalf("global list path was not shortened: %q", stdout)
+	}
+	if strings.Contains(stdout, home) || strings.Contains(stdout, "\t") {
+		t.Fatalf("global list contains an absolute home path or tab-separated columns: %q", stdout)
+	}
+	if strings.Contains(stdout, "\x1b[") {
+		t.Fatalf("captured non-terminal output unexpectedly contains ANSI color: %q", stdout)
+	}
+}
+
+func TestListTextUsesColorsWhenTerminalColorsAreEnabled(t *testing.T) {
+	source := "owner/repo"
+	var output strings.Builder
+	writeListText(&output, []listResult{{
+		Name: "alpha", Path: filepath.Join(os.TempDir(), "project", ".agents", "skills", "alpha"),
+		Agents: []string{"Codex"}, Source: &source,
+	}}, true, filepath.Join(os.TempDir(), "project"), true)
+
+	for _, color := range []string{"\x1b[1mGlobal Skills\x1b[0m", "\x1b[36malpha\x1b[0m", "\x1b[38;5;102mAgents:\x1b[0m"} {
+		if !strings.Contains(output.String(), color) {
+			t.Errorf("colored list output %q does not contain %q", output.String(), color)
+		}
+	}
+}
+
+func TestGlobalUpdateFilterAcceptsRepositorySource(t *testing.T) {
+	binary := buildCLI(t)
+	root := t.TempDir()
+	project, home := filepath.Join(root, "project"), filepath.Join(root, "home")
+	globalLockPath := filepath.Join(home, ".agents", ".skill-lock.json")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(globalLockPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		wayfinderHash = "1111111111111111111111111111111111111111"
+		wizardHash    = "2222222222222222222222222222222222222222"
+		writingHash   = "3333333333333333333333333333333333333333"
+	)
+	entry := func(skillPath, folderHash string) map[string]string {
+		return map[string]string{
+			"source": "mattpocock/skills", "sourceType": "github",
+			"sourceUrl": "https://github.com/mattpocock/skills.git",
+			"skillPath": skillPath + "/SKILL.md", "skillFolderHash": folderHash,
+		}
+	}
+	lock := map[string]any{"version": 3, "skills": map[string]any{
+		"wayfinder":          entry("skills/wayfinder", wayfinderHash),
+		"wizard":             entry("skills/wizard", wizardHash),
+		"writing-for-agents": entry("skills/writing-for-agents", writingHash),
+		"unrelated": map[string]string{
+			"source": "other/repo", "sourceType": "github",
+			"sourceUrl": "https://github.com/other/repo.git",
+			"skillPath": "skills/unrelated/SKILL.md", "skillFolderHash": "4444444444444444444444444444444444444444",
+		},
+	}}
+	lockBytes, err := json.Marshal(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalLockPath, lockBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var apiRequests atomic.Int32
+	api := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		apiRequests.Add(1)
+		switch request.URL.Path {
+		case "/repos/mattpocock/skills":
+			fmt.Fprint(response, `{"default_branch":"main"}`)
+		case "/repos/mattpocock/skills/git/trees/main":
+			fmt.Fprintf(response, `{"sha":"root","tree":[{"path":"skills/wayfinder","type":"tree","sha":"%s"},{"path":"skills/wayfinder/SKILL.md","type":"blob","sha":"a"},{"path":"skills/wizard","type":"tree","sha":"%s"},{"path":"skills/wizard/SKILL.md","type":"blob","sha":"b"},{"path":"skills/writing-for-agents","type":"tree","sha":"%s"},{"path":"skills/writing-for-agents/SKILL.md","type":"blob","sha":"c"}]}`, wayfinderHash, wizardHash, writingHash)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer api.Close()
+
+	stdout, stderr, exitCode := runCLIAtWithEnv(t, binary, project, home, "", []string{"SKILLS_GO_TEST_GITHUB_API_URL=" + api.URL}, "update", "-g", "mattpocock/skills")
+	if exitCode != 0 {
+		t.Fatalf("source-filtered global update exit = %d; stdout: %s; stderr: %s", exitCode, stdout, stderr)
+	}
+	if strings.Contains(stdout, "No installed skills found matching") {
+		t.Fatalf("repository source filter did not match its lock entries: %s", stdout)
+	}
+	if apiRequests.Load() != 2 {
+		t.Fatalf("source-filtered update made %d GitHub API requests, want one repository and one tree request", apiRequests.Load())
+	}
+	lockAfter, err := os.ReadFile(globalLockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(lockAfter) != string(lockBytes) {
+		t.Fatalf("unchanged source filter rewrote the global lock: %s", lockAfter)
+	}
+}

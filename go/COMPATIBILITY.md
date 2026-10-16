@@ -24,7 +24,7 @@ Go 二进制通过 GitHub Release 分发，资产名为：
 | `skills update [skills...]` | `check`、`upgrade` | 检查并更新已安装技能 |
 | `skills install` | `i`、`experimental_install` | 从项目 lock 文件恢复安装 |
 
-运行 `skills --help` 或 `skills <command> --help` 查看当前版本的完整帮助。
+运行 `skills --help` 或 `skills <command> --help` 查看当前版本的完整帮助。`list` 的文本输出为每个技能两行，按名称与路径对齐；`$HOME` 下的路径缩写为 `~`，当前项目内路径缩写为 `.`。ANSI 颜色仅用于终端输出；`NO_COLOR` 禁用颜色，`FORCE_COLOR` 可强制开启。
 
 ### 常用参数
 
@@ -36,7 +36,7 @@ Go 二进制通过 GitHub Release 分发，资产名为：
 - 发现范围：`add --full-depth`、`use --full-depth` 搜索更深层目录。
 - Eve：`add --subagent <name...>` 可指定 Eve 子 agent；`root` 表示 Eve 根 agent。
 - 移除：`remove --all` 移除范围内全部技能并跳过确认；`--skill` 可指定技能名。
-- 更新：`update --project` 或 `--global` 指定范围；默认在交互终端询问，非交互时根据项目是否已有技能选择范围。`--yes` 跳过确认。
+- 更新：`update --project` 或 `--global` 指定范围；默认在交互终端询问，非交互时根据项目是否已有技能选择范围。位置参数可按技能名或 lock 中的来源标识筛选，`--yes` 跳过确认。
 - 使用：`use --skill <name>` 选择技能；`use --agent <id>` 可启动 Claude Code、Codex 或 Sarvam Code。
 - 输出：`add --json` 输出 JSON 数组，必须同时使用 `--yes`；不能与 `--list` 合用。`list --json` 输出 JSON 数组。
 

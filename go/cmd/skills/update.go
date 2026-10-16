@@ -166,13 +166,19 @@ func hasProjectSkills(cwd string) bool {
 	return false
 }
 
-func matchesUpdateFilter(name string, filters []string) bool {
+func matchesUpdateFilter(name string, entry lockfile.Entry, filters []string) bool {
 	if len(filters) == 0 {
 		return true
 	}
+	source, _ := entry.String("source")
+	sourceURL, _ := entry.String("sourceUrl")
+	sourceBaseURL, _ := entry.String("sourceBaseUrl")
 	for _, filter := range filters {
-		if strings.EqualFold(name, filter) {
-			return true
+		filter = strings.TrimSpace(filter)
+		for _, candidate := range []string{name, source, sourceURL, sourceBaseURL} {
+			if strings.EqualFold(strings.TrimSpace(candidate), filter) {
+				return true
+			}
 		}
 	}
 	return false
@@ -189,7 +195,7 @@ func updateGlobalSkills(options updateOptions, stdout, stderr io.Writer) (int, b
 	var keys, wellKnownKeys []string
 	found := 0
 	for name, entry := range lock.Skills {
-		if !matchesUpdateFilter(name, options.skills) {
+		if !matchesUpdateFilter(name, entry, options.skills) {
 			continue
 		}
 		found++
@@ -556,7 +562,7 @@ func updateProjectSkills(options updateOptions, cwd string, stdout, stderr io.Wr
 	found := 0
 	failed := false
 	for name, entry := range lock.Skills {
-		if !matchesUpdateFilter(name, options.skills) {
+		if !matchesUpdateFilter(name, entry, options.skills) {
 			continue
 		}
 		found++
