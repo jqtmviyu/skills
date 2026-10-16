@@ -105,7 +105,7 @@ func runAdd(args []string, stdout, stderr io.Writer) int {
 		return addFailure(stdout, stderr, options.json, err.Error())
 	}
 	if len(skipped) > 0 {
-		fmt.Fprintf(stderr, "skills-go: no matching skills found for: %s\n", strings.Join(skipped, ", "))
+		fmt.Fprintf(stderr, "skills: no matching skills found for: %s\n", strings.Join(skipped, ", "))
 	}
 	if len(selected) == 0 {
 		if options.json {
@@ -1049,7 +1049,7 @@ func readPromptLine(input io.Reader) (string, error) {
 }
 
 func addFailure(stdout, stderr io.Writer, jsonMode bool, message string) int {
-	fmt.Fprintf(stderr, "skills-go: %s\n", message)
+	fmt.Fprintf(stderr, "skills: %s\n", message)
 	if jsonMode {
 		writeJSON(stdout, []addJSONResult{{Status: "failed", Error: message, Security: nil}})
 	}

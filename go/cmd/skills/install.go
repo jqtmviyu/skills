@@ -26,17 +26,17 @@ type restoreGroup struct {
 
 func runRestore(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
-		fmt.Fprintf(stderr, "skills-go: experimental_install does not accept arguments: %s\n", args[0])
+		fmt.Fprintf(stderr, "skills: experimental_install does not accept arguments: %s\n", args[0])
 		return 1
 	}
 	cwd, err := currentDirectory()
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: %v\n", err)
+		fmt.Fprintf(stderr, "skills: %v\n", err)
 		return 1
 	}
 	lock, err := lockfile.ReadProject(cwd)
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: read project lock: %v\n", err)
+		fmt.Fprintf(stderr, "skills: read project lock: %v\n", err)
 		return 1
 	}
 	if len(lock.Skills) == 0 {
@@ -49,12 +49,12 @@ func runRestore(args []string, stdout, stderr io.Writer) int {
 	for name, entry := range lock.Skills {
 		sourceType, _ := entry.String("sourceType")
 		if sourceType == "node_modules" {
-			fmt.Fprintf(stderr, "skills-go: skipping %s because package sync is not supported\n", name)
+			fmt.Fprintf(stderr, "skills: skipping %s because package sync is not supported\n", name)
 			continue
 		}
 		input, sourceErr := restoreScanInput(entry)
 		if sourceErr != nil {
-			fmt.Fprintf(stderr, "skills-go: cannot restore %s: %v\n", name, sourceErr)
+			fmt.Fprintf(stderr, "skills: cannot restore %s: %v\n", name, sourceErr)
 			failed = true
 			continue
 		}
@@ -69,7 +69,7 @@ func runRestore(args []string, stdout, stderr io.Writer) int {
 		group := groups[input]
 		session, openErr := openAddSource(context.Background(), input, skillscan.Options{FullDepth: true, IncludeInternal: true, IncludeDuplicateNames: true})
 		if openErr != nil {
-			fmt.Fprintf(stderr, "skills-go: cannot scan restore source %s: %v\n", input, openErr)
+			fmt.Fprintf(stderr, "skills: cannot scan restore source %s: %v\n", input, openErr)
 			failed = true
 			continue
 		}
@@ -78,7 +78,7 @@ func runRestore(args []string, stdout, stderr io.Writer) int {
 		for _, item := range group.entries {
 			candidate, resolveErr := resolveRestoreCandidate(item, candidates)
 			if resolveErr != nil {
-				fmt.Fprintf(stderr, "skills-go: cannot restore %s: %v\n", item.name, resolveErr)
+				fmt.Fprintf(stderr, "skills: cannot restore %s: %v\n", item.name, resolveErr)
 				failed = true
 				continue
 			}
@@ -91,7 +91,7 @@ func runRestore(args []string, stdout, stderr io.Writer) int {
 			}
 			materialized, materializeErr := session.scan.Materialize(paths)
 			if materializeErr != nil {
-				fmt.Fprintf(stderr, "skills-go: materialize restore source %s: %v\n", input, materializeErr)
+				fmt.Fprintf(stderr, "skills: materialize restore source %s: %v\n", input, materializeErr)
 				failed = true
 			} else {
 				byPath := make(map[string]skillscan.MaterializedSkill, len(materialized))
@@ -102,7 +102,7 @@ func runRestore(args []string, stdout, stderr io.Writer) int {
 					skill := byPath[candidate.Path]
 					_, installErr := installer.InstallSkill(installer.Skill{Name: candidate.Name, Path: skill.Directory, PluginName: candidate.PluginName}, agent.UniversalID, installer.Options{CWD: cwd, Mode: installer.Symlink, Warnings: stderr})
 					if installErr != nil {
-						fmt.Fprintf(stderr, "skills-go: restore %s: %v\n", candidate.Name, installErr)
+						fmt.Fprintf(stderr, "skills: restore %s: %v\n", candidate.Name, installErr)
 						failed = true
 						continue
 					}

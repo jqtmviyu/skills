@@ -107,6 +107,6 @@ jobs:
       - name: Install smoke test
         working-directory: go
         run: |
-          mkdir -p "$RUNNER_TEMP/skills-go-bin"
-          GOBIN="$RUNNER_TEMP/skills-go-bin" go install ./cmd/skills-go
-          "$RUNNER_TEMP/skills-go-bin/skills-go" --version
+          mkdir -p "$RUNNER_TEMP/skills-bin"
+          GOBIN="$RUNNER_TEMP/skills-bin" go install ./cmd/skills
+          "$RUNNER_TEMP/skills-bin/skills" --version

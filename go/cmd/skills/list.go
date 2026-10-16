@@ -65,31 +65,31 @@ func parseListArgs(args []string) (listOptions, error) {
 func runList(args []string, stdout, stderr io.Writer) int {
 	options, err := parseListArgs(args)
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: %v\n", err)
+		fmt.Fprintf(stderr, "skills: %v\n", err)
 		return 1
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: resolve project directory: %v\n", err)
+		fmt.Fprintf(stderr, "skills: resolve project directory: %v\n", err)
 		return 1
 	}
 	installed, err := installer.ListInstalledSkills(installer.ListOptions{Global: options.global, CWD: cwd, AgentFilter: options.agents})
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: list installed skills: %v\n", err)
+		fmt.Fprintf(stderr, "skills: list installed skills: %v\n", err)
 		return 1
 	}
 	var locked map[string]lockfile.Entry
 	if options.global {
 		lock, readErr := lockfile.ReadGlobal()
 		if readErr != nil {
-			fmt.Fprintf(stderr, "skills-go: read global lock: %v\n", readErr)
+			fmt.Fprintf(stderr, "skills: read global lock: %v\n", readErr)
 			return 1
 		}
 		locked = lock.Skills
 	} else {
 		lock, readErr := lockfile.ReadProject(cwd)
 		if readErr != nil {
-			fmt.Fprintf(stderr, "skills-go: read project lock: %v\n", readErr)
+			fmt.Fprintf(stderr, "skills: read project lock: %v\n", readErr)
 			return 1
 		}
 		locked = lock.Skills
@@ -120,7 +120,7 @@ func runList(args []string, stdout, stderr io.Writer) int {
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
 		if err := encoder.Encode(results); err != nil {
-			fmt.Fprintf(stderr, "skills-go: write list output: %v\n", err)
+			fmt.Fprintf(stderr, "skills: write list output: %v\n", err)
 			return 1
 		}
 		return 0

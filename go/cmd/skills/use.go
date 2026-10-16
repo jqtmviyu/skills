@@ -270,12 +270,12 @@ func safeUseDirectory(name string) string {
 }
 
 func useFailure(stderr io.Writer, message string) int {
-	fmt.Fprintf(stderr, "skills-go: %s\n", message)
+	fmt.Fprintf(stderr, "skills: %s\n", message)
 	return 1
 }
 
 func printUseHelp(output io.Writer) {
-	fmt.Fprint(output, `Usage: skills-go use <source>[@<skill>] [options]
+	fmt.Fprint(output, `Usage: skills use <source>[@<skill>] [options]
 
 Generate a prompt for using one skill without installing it.
 

@@ -10,7 +10,7 @@ Status: ready-for-agent
 
 ## Solution
 
-在仓库的新分支中新增独立 Go CLI 模块。第一阶段以 `skills-go` 独立命令与 Node CLI 并行，不替换现有 `bunx skills`。
+在仓库的新分支中新增独立 Go CLI 模块，使用 `skills` 命令并通过 GitHub Release 分发。Node 源码和 npm/Bun 分发保持不变，不纳入 Go 版此次发布兼容目标。
 
 保留核心安装、使用、管理和更新流程，以及现有 agent 目标、通用来源、plugin manifest 支持和 Node 版 lock 互通。移除搜索、低优先级同步、遥测/审计和专用服务端 snapshot 下载路径。
 
@@ -18,7 +18,7 @@ Git 获取采用 partial clone：先取提交与目录树，枚举符合现有�
 
 ## User Stories
 
-1. As a CLI user, I want to run the Go implementation as `skills-go`, so that I can evaluate it without changing the existing Node CLI.
+1. As a CLI user, I want to download and run the Go implementation as `skills`, so that I can use the Go CLI from a GitHub Release binary.
 2. As a CLI user, I want the core command names and aliases to remain familiar, so that I can move between the Node and Go versions with minimal retraining.
 3. As a skill installer, I want to add skills from GitHub, GitLab, local paths, and standard HTTPS/SSH Git sources, so that common repositories remain usable without a vendor-specific snapshot service.
 4. As a skill installer, I want to provide a repository without a skill subpath and see its available skills before downloading their full contents, so that large unrelated repository files do not delay selection.
@@ -49,13 +49,13 @@ Git 获取采用 partial clone：先取提交与目录树，枚举符合现有�
 29. As a script author, I want the supported JSON output fields and exit behavior to remain stable, so that automation can move to the Go binary.
 30. As a user, I want prompt choices, defaults, and cancellation outcomes to remain consistent, so that the Go CLI behaves predictably even if its colors, animation, or exact wording differ.
 31. As a user, I want Go release binaries for macOS, Linux, and Windows on amd64 and arm64, so that I can install the CLI without compiling it locally.
-32. As a user, I want to install the Go CLI with `go install` when appropriate, so that I can use the standard Go toolchain distribution path.
+32. As a user, I want to download the Go CLI from the current GitHub Release, so that I can install it without npm or a local Go toolchain.
 33. As a user, I want the Go CLI not to send telemetry or query a remote security-audit service, so that this implementation does not depend on those service-specific integrations.
 
 ## Implementation Decisions
 
 - Add the Go implementation as an independent module under a `go/` directory. Develop it on a new feature branch; keep the existing Node implementation intact during parallel validation.
-- Name the initial executable `skills-go`. Do not change the existing `skills` or `bunx skills` entry point in this scope.
+- Name the Go executable `skills`. Keep the Node implementation and npm/Bun package entry points unchanged; distribute the Go binary through GitHub Releases.
 - Retain the core command surface: add, use, remove, list, update/check/upgrade, lock-based restore, and init. Retain relevant aliases and core flags. Do not implement standalone find/search or experimental package synchronization.
 - Retain the current agent registry, installation destinations, global/project behavior, supported generic source formats, plugin-manifest discovery, and standardized well-known sources.
 - Remove the allowlisted `skills.sh` snapshot download path, the Zapier-specific snapshot endpoint, Notion-specific flows, telemetry, security audit requests, GHES-specific API-host configuration, and `gh api` credential retrieval fallback. Use local filesystem access, standard Git HTTPS/SSH, configured Git credentials/SSH, environment tokens for standard GitHub API requests, and standard HTTP/well-known behavior where applicable.
@@ -67,7 +67,7 @@ Git 获取采用 partial clone：先取提交与目录树，枚举符合现有�
 - Keep the existing hash contracts: Global GitHub `skillFolderHash` is the Git tree hash; Project `computedHash` is the SHA-256 content hash with current exclusions. Do not merge these into one algorithm.
 - For Project `computedHash`, sort normalized relative POSIX paths using the process default locale as Node `localeCompare` does: `LC_ALL` first, then `LANG`, with a deterministic English fallback; do not use `LC_COLLATE` as an override. Use stable collation so equal-comparison paths retain traversal order.
 - Preserve interaction semantics and JSON contracts. Exact ANSI styling, animation, and presentation copy do not need byte-for-byte compatibility.
-- Build release binaries for macOS, Linux, and Windows on amd64 and arm64; support `go install` as an additional installation route.
+- Build release binaries for macOS, Linux, and Windows on amd64 and arm64; publish them automatically to the matching `vX.Y.Z` GitHub Release in the repository where the release was published.
 
 ## Testing Decisions
 

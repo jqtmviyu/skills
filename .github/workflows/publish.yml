@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: npm-publish
     permissions:
+      actions: write
       contents: write
       id-token: write
 
@@ -63,28 +64,6 @@ jobs:
         run: |
           npm version ${{ inputs.bump }} -m "v%s"
 
-      - name: Setup Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
-
-      - name: Cross-compile Go CLI release binaries
-        working-directory: go
-        run: |
-          VERSION=$(node -p "require('../package.json').version")
-          OUTPUT="$RUNNER_TEMP/skills-go-release"
-          mkdir -p "$OUTPUT"
-          for TARGET in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
-            GOOS="${TARGET%/*}"
-            GOARCH="${TARGET#*/}"
-            SUFFIX=""
-            if [ "$GOOS" = windows ]; then SUFFIX=".exe"; fi
-            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
-              go build -trimpath -ldflags "-s -w -X main.version=$VERSION" \
-              -o "$OUTPUT/skills-go-$GOOS-$GOARCH$SUFFIX" ./cmd/skills-go
-          done
-
       - name: Push changes
         run: |
           git push
@@ -93,14 +72,6 @@ jobs:
       - name: Publish to npm
         id: publish
         run: npm publish --provenance --access public
-
-      - name: Tag Go module version
-        if: steps.publish.outcome == 'success'
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          GO_TAG="go/v${VERSION}"
-          git tag -s "$GO_TAG" -m "skills-go v${VERSION}"
-          git push origin "$GO_TAG"
 
       - name: Create GitHub Release
         if: steps.publish.outcome == 'success'
@@ -117,9 +88,9 @@ jobs:
 
           # Fetch merged PRs and format as changelog
           if [ -z "$SINCE" ]; then
-            PRS=$(gh pr list --state merged --json number,title,author --limit 100)
+            PRS=$(gh pr list --state merged --json number,title,author --limit 100 --repo "$GITHUB_REPOSITORY")
           else
-            PRS=$(gh pr list --state merged --search "merged:>=${SINCE}" --json number,title,author --limit 100)
+            PRS=$(gh pr list --state merged --search "merged:>=${SINCE}" --json number,title,author --limit 100 --repo "$GITHUB_REPOSITORY")
           fi
 
           CHANGELOG=$(echo "$PRS" | jq -r '.[] | "- \(.title) (#\(.number))"')
@@ -129,14 +100,16 @@ jobs:
           export VERSION CHANGELOG CONTRIBUTORS
           envsubst < .github/RELEASE_TEMPLATE.md > release-notes.md
 
-          gh release create "v${VERSION}" --notes-file release-notes.md
+          gh release create "v${VERSION}" --notes-file release-notes.md --repo "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload Go CLI release binaries
+      - name: Dispatch Go Release asset workflow
         if: steps.publish.outcome == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          gh release upload "v${VERSION}" "$RUNNER_TEMP"/skills-go-release/* --clobber
+          gh workflow run release-go.yml --ref "$GITHUB_REF_NAME" \
+            --field "release_tag=v${VERSION}" \
+            --repo "$GITHUB_REPOSITORY"

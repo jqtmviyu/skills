@@ -1,18 +1,26 @@
-# skills-go
+# Skills Go CLI
 
-`skills-go` is the Go CLI for managing Agent Skills. It is distributed separately from the existing Node.js `skills` CLI and does not change the `bunx skills` or npm entry points.
+The Go CLI manages Agent Skills and is released as a standalone `skills` executable. Download the asset for your operating system and architecture from the [GitHub Releases](https://github.com/jqtmviyu/skills/releases) page.
 
-## Install
+The Node.js implementation and its npm distribution remain unchanged. This Go binary is distributed through GitHub Releases, not npm.
 
-Install the latest Go module release:
+## Download a release asset
+
+Release assets use these names:
+
+- `skills-darwin-amd64`, `skills-darwin-arm64`
+- `skills-linux-amd64`, `skills-linux-arm64`
+- `skills-windows-amd64.exe`, `skills-windows-arm64.exe`
+
+After downloading the matching asset, make it executable on macOS/Linux and place it in a directory on your `PATH`:
 
 ```sh
-go install github.com/vercel-labs/skills/go/cmd/skills-go@latest
+chmod +x skills-darwin-arm64
+mkdir -p "$HOME/.local/bin"
+mv skills-darwin-arm64 "$HOME/.local/bin/skills"
 ```
 
-The Go module lives in the repository's `go/` directory. Release tags use the `go/vX.Y.Z` prefix required for a module rooted in a subdirectory. The installed command is named `skills-go` and should be available on the Go bin directory in your `PATH`.
-
-Prebuilt binaries for macOS, Linux, and Windows (`amd64` and `arm64`) are attached to the matching GitHub Release. Download the asset for your operating system and architecture, then place the executable on your `PATH`.
+Replace the asset name with the one matching your OS and CPU architecture. On Windows, keep the `.exe` suffix.
 
 ## Build from a checkout
 
@@ -20,25 +28,24 @@ From the repository root:
 
 ```sh
 cd go
-go test ./...
+go test ./... -count=1
 go vet ./...
-go build -o ./skills-go ./cmd/skills-go
-./skills-go --help
-```
-
-To install the checkout into a temporary bin directory:
-
-```sh
-cd go
-GOBIN="$(mktemp -d)" go install ./cmd/skills-go
+go build -o ./skills ./cmd/skills
+./skills --help
 ```
 
 ## Commands
 
-The Go CLI provides `add`, `use`, `init`, `list`, `remove`, `update` (`check` / `upgrade`), and lock-based restore. For command options, run:
+The Go CLI provides `add`, `use`, `init`, `list`, `remove`, `update` (`check` / `upgrade`), and lock-based restore. For available options, run:
 
 ```sh
-skills-go --help
-skills-go add --help
-skills-go update --help
+skills --help
+skills add --help
+skills update --help
 ```
+
+See [COMPATIBILITY.md](./COMPATIBILITY.md) for the CLI, JSON, configuration, and lock-file contract.
+
+## Release workflow
+
+When a versioned GitHub Release is published in this repository, GitHub Actions builds and uploads the six platform assets above. The existing publishing workflow dispatches the asset workflow after creating a Release; Releases created manually trigger it directly. Both paths upload to the repository that owns the Release and use GitHub's built-in `GITHUB_TOKEN`.

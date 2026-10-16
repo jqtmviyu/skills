@@ -13,7 +13,7 @@ import (
 )
 
 func (scan *Scan) openGit(ctx context.Context) error {
-	temporaryDirectory, err := os.MkdirTemp(scan.options.TempDir, "skills-go-scan-")
+	temporaryDirectory, err := os.MkdirTemp(scan.options.TempDir, "skills-scan-")
 	if err != nil {
 		return fmt.Errorf("create temporary Git scan directory: %w", err)
 	}
@@ -55,7 +55,7 @@ func (scan *Scan) openGit(ctx context.Context) error {
 		return fmt.Errorf("resolve fetched Git revision: %w", err)
 	}
 	scan.commit = strings.TrimSpace(commit)
-	if _, _, err := runGit(ctx, temporaryDirectory, "update-ref", "refs/skills-go/scan", scan.commit); err != nil {
+	if _, _, err := runGit(ctx, temporaryDirectory, "update-ref", "refs/skills/scan", scan.commit); err != nil {
 		return fmt.Errorf("record fetched Git revision: %w", err)
 	}
 

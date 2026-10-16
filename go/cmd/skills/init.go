@@ -30,16 +30,16 @@ Describe when this skill should be used.
 
 func runInit(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
-		fmt.Fprintln(stdout, "Usage: skills-go init [name]")
+		fmt.Fprintln(stdout, "Usage: skills init [name]")
 		return 0
 	}
 	if len(args) > 1 {
-		fmt.Fprintln(stderr, "skills-go: init accepts at most one skill name")
+		fmt.Fprintln(stderr, "skills: init accepts at most one skill name")
 		return 1
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: resolve project directory: %v\n", err)
+		fmt.Fprintf(stderr, "skills: resolve project directory: %v\n", err)
 		return 1
 	}
 	name := filepath.Base(cwd)
@@ -47,7 +47,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	if hasName {
 		name = args[0]
 		if filepath.IsAbs(name) || name == "." || name == ".." || strings.Contains(name, "/") || strings.Contains(name, "\\") {
-			fmt.Fprintln(stderr, "skills-go: skill name must be a single path component")
+			fmt.Fprintln(stderr, "skills: skill name must be a single path component")
 			return 1
 		}
 	}
@@ -58,7 +58,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		displayPath = filepath.ToSlash(filepath.Join(name, "SKILL.md"))
 	}
 	if err := os.MkdirAll(directory, 0o755); err != nil {
-		fmt.Fprintf(stderr, "skills-go: create skill directory: %v\n", err)
+		fmt.Fprintf(stderr, "skills: create skill directory: %v\n", err)
 		return 1
 	}
 	filename := filepath.Join(directory, "SKILL.md")
@@ -66,11 +66,11 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "Skill already exists at %s\n", displayPath)
 		return 0
 	} else if !os.IsNotExist(err) {
-		fmt.Fprintf(stderr, "skills-go: inspect %s: %v\n", displayPath, err)
+		fmt.Fprintf(stderr, "skills: inspect %s: %v\n", displayPath, err)
 		return 1
 	}
 	if err := os.WriteFile(filename, []byte(fmt.Sprintf(initSkillTemplate, name, name)), 0o644); err != nil {
-		fmt.Fprintf(stderr, "skills-go: create %s: %v\n", displayPath, err)
+		fmt.Fprintf(stderr, "skills: create %s: %v\n", displayPath, err)
 		return 1
 	}
 	fmt.Fprintf(stdout, `Initialized skill: %s

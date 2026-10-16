@@ -78,17 +78,17 @@ func parseUpdateArgs(args []string) (updateOptions, error) {
 func runUpdate(args []string, stdout, stderr io.Writer) int {
 	options, err := parseUpdateArgs(args)
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: %v\n", err)
+		fmt.Fprintf(stderr, "skills: %v\n", err)
 		return 1
 	}
 	cwd, err := currentDirectory()
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: %v\n", err)
+		fmt.Fprintf(stderr, "skills: %v\n", err)
 		return 1
 	}
 	global, project, err := resolveUpdateScope(options, cwd, os.Stdin, stdout)
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: %v\n", err)
+		fmt.Fprintf(stderr, "skills: %v\n", err)
 		return 1
 	}
 	fmt.Fprintln(stdout, "Checking for skill updates...")
@@ -181,7 +181,7 @@ func matchesUpdateFilter(name string, filters []string) bool {
 func updateGlobalSkills(options updateOptions, stdout, stderr io.Writer) (int, bool) {
 	lock, err := lockfile.ReadGlobal()
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: read global lock: %v\n", err)
+		fmt.Fprintf(stderr, "skills: read global lock: %v\n", err)
 		return 0, true
 	}
 	groups := make(map[string][]updateItem)
@@ -240,7 +240,7 @@ func updateGlobalSkills(options updateOptions, stdout, stderr io.Writer) (int, b
 	}
 	if wellKnownLockChanged {
 		if err := lockfile.WriteGlobal(lock); err != nil {
-			fmt.Fprintf(stderr, "skills-go: write Global well-known lock: %v\n", err)
+			fmt.Fprintf(stderr, "skills: write Global well-known lock: %v\n", err)
 			failed = true
 		}
 	}
@@ -273,9 +273,9 @@ func updateGlobalSkills(options updateOptions, stdout, stderr io.Writer) (int, b
 				}
 				continue
 			}
-			fmt.Fprintf(stderr, "skills-go: locked skill path changed for %s; checking with partial Git scan\n", key)
+			fmt.Fprintf(stderr, "skills: locked skill path changed for %s; checking with partial Git scan\n", key)
 		} else if sourceType == "github" {
-			fmt.Fprintf(stderr, "skills-go: GitHub Trees API unavailable for %s; checking with partial Git scan\n", key)
+			fmt.Fprintf(stderr, "skills: GitHub Trees API unavailable for %s; checking with partial Git scan\n", key)
 		}
 		changed = checkGroupWithPartialGit(first, items, true, stdout, stderr, &failed)
 		if len(changed) > 0 {
@@ -315,12 +315,12 @@ func changedWellKnownItems(baseURL string, items []updateItem) ([]updateItem, er
 func updateWellKnownItems(baseURL string, items []updateItem, global bool, cwd string, globalLock *lockfile.GlobalLock, projectLock *lockfile.ProjectLock, stdout, stderr io.Writer) (bool, bool) {
 	session, err := openAddSource(context.Background(), baseURL, skillscan.Options{FullDepth: true, IncludeInternal: true, IncludeDuplicateNames: true})
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: fetch well-known updates from %s: %v\n", baseURL, err)
+		fmt.Fprintf(stderr, "skills: fetch well-known updates from %s: %v\n", baseURL, err)
 		return false, true
 	}
 	defer session.Close()
 	if !session.wellKnown {
-		fmt.Fprintf(stderr, "skills-go: source %s no longer provides a supported well-known index\n", baseURL)
+		fmt.Fprintf(stderr, "skills: source %s no longer provides a supported well-known index\n", baseURL)
 		return false, true
 	}
 
@@ -335,7 +335,7 @@ func updateWellKnownItems(baseURL string, items []updateItem, global bool, cwd s
 	for _, item := range items {
 		matches := candidates[strings.ToLower(item.name)]
 		if len(matches) != 1 {
-			fmt.Fprintf(stderr, "skills-go: well-known skill %s is missing or ambiguous at %s\n", item.name, baseURL)
+			fmt.Fprintf(stderr, "skills: well-known skill %s is missing or ambiguous at %s\n", item.name, baseURL)
 			failed = true
 			continue
 		}
@@ -347,7 +347,7 @@ func updateWellKnownItems(baseURL string, items []updateItem, global bool, cwd s
 	}
 	materialized, err := session.scan.Materialize(paths)
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: materialize well-known updates from %s: %v\n", baseURL, err)
+		fmt.Fprintf(stderr, "skills: materialize well-known updates from %s: %v\n", baseURL, err)
 		return false, true
 	}
 	byPath := make(map[string]skillscan.MaterializedSkill, len(materialized))
@@ -362,12 +362,12 @@ func updateWellKnownItems(baseURL string, items []updateItem, global bool, cwd s
 		}
 		skill, ok := byPath[candidate.Path]
 		if !ok {
-			fmt.Fprintf(stderr, "skills-go: materialized well-known skill %s is missing\n", item.name)
+			fmt.Fprintf(stderr, "skills: materialized well-known skill %s is missing\n", item.name)
 			failed = true
 			continue
 		}
 		if err := installManagedSkill(item.name, skill.Directory, global, cwd, lockStringArray(item.entry, "subagents")); err != nil {
-			fmt.Fprintf(stderr, "skills-go: update well-known skill %s: %v\n", item.name, err)
+			fmt.Fprintf(stderr, "skills: update well-known skill %s: %v\n", item.name, err)
 			failed = true
 			continue
 		}
@@ -375,20 +375,20 @@ func updateWellKnownItems(baseURL string, items []updateItem, global bool, cwd s
 		if digest == "" {
 			digest, err = computeWellKnownDigest(skill.Directory)
 			if err != nil {
-				fmt.Fprintf(stderr, "skills-go: hash updated well-known skill %s: %v\n", item.name, err)
+				fmt.Fprintf(stderr, "skills: hash updated well-known skill %s: %v\n", item.name, err)
 				failed = true
 				continue
 			}
 		}
 		if global {
 			if globalLock == nil {
-				fmt.Fprintf(stderr, "skills-go: Global lock is unavailable for well-known skill %s\n", item.name)
+				fmt.Fprintf(stderr, "skills: Global lock is unavailable for well-known skill %s\n", item.name)
 				failed = true
 				continue
 			}
 			entry := globalLock.Skills[item.name]
 			if err := entry.Set("wellKnownDigest", digest); err != nil {
-				fmt.Fprintf(stderr, "skills-go: update Global lock entry %s: %v\n", item.name, err)
+				fmt.Fprintf(stderr, "skills: update Global lock entry %s: %v\n", item.name, err)
 				failed = true
 				continue
 			}
@@ -396,24 +396,24 @@ func updateWellKnownItems(baseURL string, items []updateItem, global bool, cwd s
 			globalLock.Skills[item.name] = entry
 		} else {
 			if projectLock == nil {
-				fmt.Fprintf(stderr, "skills-go: Project lock is unavailable for well-known skill %s\n", item.name)
+				fmt.Fprintf(stderr, "skills: Project lock is unavailable for well-known skill %s\n", item.name)
 				failed = true
 				continue
 			}
 			projectHash, hashErr := lockfile.ComputeProjectHash(skill.Directory)
 			if hashErr != nil {
-				fmt.Fprintf(stderr, "skills-go: hash updated Project skill %s: %v\n", item.name, hashErr)
+				fmt.Fprintf(stderr, "skills: hash updated Project skill %s: %v\n", item.name, hashErr)
 				failed = true
 				continue
 			}
 			entry := projectLock.Skills[item.name]
 			if err := entry.Set("wellKnownDigest", digest); err != nil {
-				fmt.Fprintf(stderr, "skills-go: update Project lock digest %s: %v\n", item.name, err)
+				fmt.Fprintf(stderr, "skills: update Project lock digest %s: %v\n", item.name, err)
 				failed = true
 				continue
 			}
 			if err := entry.Set("computedHash", projectHash); err != nil {
-				fmt.Fprintf(stderr, "skills-go: update Project lock hash %s: %v\n", item.name, err)
+				fmt.Fprintf(stderr, "skills: update Project lock hash %s: %v\n", item.name, err)
 				failed = true
 				continue
 			}
@@ -547,7 +547,7 @@ func convertTreeEntries(entries []githubTreeEntry) []lockfile.TreeEntry {
 func updateProjectSkills(options updateOptions, cwd string, stdout, stderr io.Writer) (int, bool) {
 	lock, err := lockfile.ReadProject(cwd)
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: read project lock: %v\n", err)
+		fmt.Fprintf(stderr, "skills: read project lock: %v\n", err)
 		return 0, true
 	}
 	groups := make(map[string][]updateItem)
@@ -586,7 +586,7 @@ func updateProjectSkills(options updateOptions, cwd string, stdout, stderr io.Wr
 		}
 		input, sourceErr := restoreScanInput(entry)
 		if sourceErr != nil {
-			fmt.Fprintf(stderr, "skills-go: cannot update project skill %s: %v\n", name, sourceErr)
+			fmt.Fprintf(stderr, "skills: cannot update project skill %s: %v\n", name, sourceErr)
 			failed = true
 			continue
 		}
@@ -621,7 +621,7 @@ func updateProjectSkills(options updateOptions, cwd string, stdout, stderr io.Wr
 		}
 		session, openErr := openAddSource(context.Background(), input, skillscan.Options{FullDepth: true, IncludeInternal: true, IncludeDuplicateNames: true})
 		if openErr != nil {
-			fmt.Fprintf(stderr, "skills-go: cannot install updates from %s: %v\n", input, openErr)
+			fmt.Fprintf(stderr, "skills: cannot install updates from %s: %v\n", input, openErr)
 			failed = true
 			continue
 		}
@@ -631,7 +631,7 @@ func updateProjectSkills(options updateOptions, cwd string, stdout, stderr io.Wr
 		}
 		materialized, materializeErr := session.scan.Materialize(paths)
 		if materializeErr != nil {
-			fmt.Fprintf(stderr, "skills-go: materialize updates from %s: %v\n", input, materializeErr)
+			fmt.Fprintf(stderr, "skills: materialize updates from %s: %v\n", input, materializeErr)
 			failed = true
 			session.Close()
 			continue
@@ -644,12 +644,12 @@ func updateProjectSkills(options updateOptions, cwd string, stdout, stderr io.Wr
 			skill := byPath[update.candidate.Path]
 			newHash, hashErr := lockfile.ComputeProjectHash(skill.Directory)
 			if hashErr != nil {
-				fmt.Fprintf(stderr, "skills-go: hash updated skill %s: %v\n", update.item.name, hashErr)
+				fmt.Fprintf(stderr, "skills: hash updated skill %s: %v\n", update.item.name, hashErr)
 				failed = true
 				continue
 			}
 			if err := installManagedSkill(update.item.name, skill.Directory, false, cwd, lockStringArray(update.item.entry, "subagents")); err != nil {
-				fmt.Fprintf(stderr, "skills-go: update %s: %v\n", update.item.name, err)
+				fmt.Fprintf(stderr, "skills: update %s: %v\n", update.item.name, err)
 				failed = true
 				continue
 			}
@@ -658,7 +658,7 @@ func updateProjectSkills(options updateOptions, cwd string, stdout, stderr io.Wr
 				fields["skillPath"] = path.Join(update.candidate.Path, "SKILL.md")
 			}
 			if err := lock.Skills[update.item.name].Set("computedHash", newHash); err != nil {
-				fmt.Fprintf(stderr, "skills-go: update lock entry %s: %v\n", update.item.name, err)
+				fmt.Fprintf(stderr, "skills: update lock entry %s: %v\n", update.item.name, err)
 				failed = true
 				continue
 			}
@@ -672,7 +672,7 @@ func updateProjectSkills(options updateOptions, cwd string, stdout, stderr io.Wr
 	}
 	if changedAny {
 		if err := lockfile.WriteProject(cwd, lock); err != nil {
-			fmt.Fprintf(stderr, "skills-go: write project lock: %v\n", err)
+			fmt.Fprintf(stderr, "skills: write project lock: %v\n", err)
 			failed = true
 		}
 	}
@@ -682,13 +682,13 @@ func updateProjectSkills(options updateOptions, cwd string, stdout, stderr io.Wr
 func checkGroupWithPartialGit(first lockfile.Entry, items []updateItem, global bool, stdout, stderr io.Writer, failed *bool) []updateLocation {
 	input, err := restoreScanInput(first)
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: cannot check source: %v\n", err)
+		fmt.Fprintf(stderr, "skills: cannot check source: %v\n", err)
 		*failed = true
 		return nil
 	}
 	session, err := openAddSource(context.Background(), input, skillscan.Options{FullDepth: true, IncludeInternal: true, IncludeDuplicateNames: true})
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: cannot check source %s: %v\n", input, err)
+		fmt.Fprintf(stderr, "skills: cannot check source %s: %v\n", input, err)
 		*failed = true
 		return nil
 	}
@@ -701,7 +701,7 @@ func checkGroupWithPartialGit(first lockfile.Entry, items []updateItem, global b
 		fmt.Fprintf(stdout, "Skill %s appears deleted upstream; keeping the local installation and lock.\n", name)
 	}
 	for _, name := range ambiguous {
-		fmt.Fprintf(stderr, "skills-go: multiple current paths match %s; leaving it unchanged\n", name)
+		fmt.Fprintf(stderr, "skills: multiple current paths match %s; leaving it unchanged\n", name)
 	}
 	if global {
 		var changed []updateLocation
@@ -717,7 +717,7 @@ func checkGroupWithPartialGit(first lockfile.Entry, items []updateItem, global b
 				}
 			}
 			if latest == "" {
-				fmt.Fprintf(stderr, "skills-go: cannot compute update hash for %s\n", location.item.name)
+				fmt.Fprintf(stderr, "skills: cannot compute update hash for %s\n", location.item.name)
 				*failed = true
 				continue
 			}
@@ -734,7 +734,7 @@ func checkGroupWithPartialGit(first lockfile.Entry, items []updateItem, global b
 	}
 	materialized, err := session.scan.Materialize(paths)
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: materialize locked skill directories: %v\n", err)
+		fmt.Fprintf(stderr, "skills: materialize locked skill directories: %v\n", err)
 		*failed = true
 		return nil
 	}
@@ -747,7 +747,7 @@ func checkGroupWithPartialGit(first lockfile.Entry, items []updateItem, global b
 		skill := byPath[location.candidate.Path]
 		latest, hashErr := lockfile.ComputeProjectHash(skill.Directory)
 		if hashErr != nil {
-			fmt.Fprintf(stderr, "skills-go: hash project skill %s: %v\n", location.item.name, hashErr)
+			fmt.Fprintf(stderr, "skills: hash project skill %s: %v\n", location.item.name, hashErr)
 			*failed = true
 			continue
 		}
@@ -855,13 +855,13 @@ func updateGlobalFromScan(changed []updateLocation, stdout, stderr io.Writer, fa
 	}
 	input, err := restoreScanInput(changed[0].item.entry)
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: cannot update global source: %v\n", err)
+		fmt.Fprintf(stderr, "skills: cannot update global source: %v\n", err)
 		*failed = true
 		return nil
 	}
 	session, err := openAddSource(context.Background(), input, skillscan.Options{FullDepth: true, IncludeInternal: true, IncludeDuplicateNames: true})
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: cannot install global updates from %s: %v\n", input, err)
+		fmt.Fprintf(stderr, "skills: cannot install global updates from %s: %v\n", input, err)
 		*failed = true
 		return nil
 	}
@@ -885,7 +885,7 @@ func updateGlobalFromScan(changed []updateLocation, stdout, stderr io.Writer, fa
 	}
 	materialized, err := session.scan.Materialize(paths)
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: materialize global updates: %v\n", err)
+		fmt.Fprintf(stderr, "skills: materialize global updates: %v\n", err)
 		*failed = true
 		return nil
 	}
@@ -895,7 +895,7 @@ func updateGlobalFromScan(changed []updateLocation, stdout, stderr io.Writer, fa
 	}
 	lock, err := lockfile.ReadGlobal()
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: read global lock: %v\n", err)
+		fmt.Fprintf(stderr, "skills: read global lock: %v\n", err)
 		*failed = true
 		return nil
 	}
@@ -903,7 +903,7 @@ func updateGlobalFromScan(changed []updateLocation, stdout, stderr io.Writer, fa
 	for _, update := range selected {
 		skill := byPath[update.candidate.Path]
 		if err := installManagedSkill(update.item.name, skill.Directory, true, "", nil); err != nil {
-			fmt.Fprintf(stderr, "skills-go: update global skill %s: %v\n", update.item.name, err)
+			fmt.Fprintf(stderr, "skills: update global skill %s: %v\n", update.item.name, err)
 			*failed = true
 			continue
 		}
@@ -916,7 +916,7 @@ func updateGlobalFromScan(changed []updateLocation, stdout, stderr io.Writer, fa
 			latest, _ = lockfile.ComputeProjectHash(skill.Directory)
 		}
 		if latest == "" {
-			fmt.Fprintf(stderr, "skills-go: cannot compute update hash for updated skill %s\n", update.item.name)
+			fmt.Fprintf(stderr, "skills: cannot compute update hash for updated skill %s\n", update.item.name)
 			*failed = true
 			continue
 		}
@@ -931,7 +931,7 @@ func updateGlobalFromScan(changed []updateLocation, stdout, stderr io.Writer, fa
 	}
 	if changedLock {
 		if err := lockfile.WriteGlobal(lock); err != nil {
-			fmt.Fprintf(stderr, "skills-go: write global lock: %v\n", err)
+			fmt.Fprintf(stderr, "skills: write global lock: %v\n", err)
 			*failed = true
 		}
 	}

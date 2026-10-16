@@ -16,11 +16,11 @@ import (
 func buildCLI(t *testing.T) string {
 	t.Helper()
 
-	binary := filepath.Join(t.TempDir(), "skills-go")
+	binary := filepath.Join(t.TempDir(), "skills")
 	command := exec.Command("go", "build", "-o", binary, ".")
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("build skills-go: %v\n%s", err, output)
+		t.Fatalf("build skills: %v\n%s", err, output)
 	}
 	return binary
 }
@@ -47,7 +47,7 @@ func runCLI(t *testing.T, binary string, args ...string) (string, string, int) {
 	if exitError, ok := err.(*exec.ExitError); ok {
 		return stdout.String(), stderr.String(), exitError.ExitCode()
 	}
-	t.Fatalf("run skills-go: %v", err)
+	t.Fatalf("run skills: %v", err)
 	return "", "", -1
 }
 
@@ -85,8 +85,8 @@ func TestVersionFlagReportsVersion(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", exitCode, stderr)
 	}
-	if stdout != "skills-go dev\n" {
-		t.Fatalf("stdout = %q, want %q", stdout, "skills-go dev\n")
+	if stdout != "skills dev\n" {
+		t.Fatalf("stdout = %q, want %q", stdout, "skills dev\n")
 	}
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
@@ -152,7 +152,7 @@ func TestUnknownCommandIsReportedOnStderr(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want empty", stdout)
 	}
-	if stderr != "skills-go: unknown command \"not-a-command\"\n" {
+	if stderr != "skills: unknown command \"not-a-command\"\n" {
 		t.Fatalf("stderr = %q, want unknown-command error", stderr)
 	}
 }
@@ -171,7 +171,7 @@ func TestAddJSONModeKeepsStdoutParseableOnMissingSource(t *testing.T) {
 	if len(results) != 1 || results[0]["status"] != "failed" || results[0]["error"] != "add requires a source" {
 		t.Fatalf("JSON error result = %#v, want one failed result", results)
 	}
-	if stderr != "skills-go: add requires a source\n" {
+	if stderr != "skills: add requires a source\n" {
 		t.Fatalf("stderr = %q, want missing-source error", stderr)
 	}
 
@@ -1139,7 +1139,7 @@ func runCLIAtWithEnv(t *testing.T, binary, project, home, input string, extraEnv
 	if exitError, ok := err.(*exec.ExitError); ok {
 		return stdout.String(), stderr.String(), exitError.ExitCode()
 	}
-	t.Fatalf("run skills-go: %v", err)
+	t.Fatalf("run skills: %v", err)
 	return "", "", -1
 }
 

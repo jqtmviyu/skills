@@ -84,13 +84,13 @@ func ListInstalledSkills(options ListOptions) ([]InstalledSkill, error) {
 		if agent.IsUniversal(config.ID) && !detected[config.ID] {
 			continue
 		}
-		target, targetErr := agent.ResolveTarget(config.ID, "skills-go-list-probe", agent.TargetOptions{Global: options.Global, CWD: cwd})
+		target, targetErr := agent.ResolveTarget(config.ID, "skills-list-probe", agent.TargetOptions{Global: options.Global, CWD: cwd})
 		if targetErr == nil {
 			targets = append(targets, directoryTarget{path: target.AgentBase, agent: config.ID})
 		}
 		if config.ID == "eve" && !options.Global {
 			for _, subagent := range agent.EveSubagents(cwd) {
-				subagentTarget, subagentErr := agent.ResolveTarget(config.ID, "skills-go-list-probe", agent.TargetOptions{CWD: cwd, EveSubagent: subagent})
+				subagentTarget, subagentErr := agent.ResolveTarget(config.ID, "skills-list-probe", agent.TargetOptions{CWD: cwd, EveSubagent: subagent})
 				if subagentErr == nil {
 					targets = append(targets, directoryTarget{path: subagentTarget.AgentBase, agent: config.ID})
 				}

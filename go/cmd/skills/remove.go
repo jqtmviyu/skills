@@ -73,28 +73,28 @@ func parseRemoveArgs(args []string) (removeOptions, error) {
 func runRemove(args []string, stdout, stderr io.Writer) int {
 	options, err := parseRemoveArgs(args)
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: %v\n", err)
+		fmt.Fprintf(stderr, "skills: %v\n", err)
 		return 1
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: resolve project directory: %v\n", err)
+		fmt.Fprintf(stderr, "skills: resolve project directory: %v\n", err)
 		return 1
 	}
 	lockSkills, lock, err := readManagementLock(options.global, cwd)
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: read lock: %v\n", err)
+		fmt.Fprintf(stderr, "skills: read lock: %v\n", err)
 		return 1
 	}
 	installed, err := installer.ListInstalledSkills(installer.ListOptions{Global: options.global, CWD: cwd})
 	if err != nil {
-		fmt.Fprintf(stderr, "skills-go: list installed skills: %v\n", err)
+		fmt.Fprintf(stderr, "skills: list installed skills: %v\n", err)
 		return 1
 	}
 	resolved := resolveRemovalNames(options.skills, options.all, installed, lockSkills)
 	if len(resolved) == 0 {
 		if !options.all && len(options.skills) > 0 {
-			fmt.Fprintf(stderr, "skills-go: no matching skills found for: %s\n", strings.Join(options.skills, ", "))
+			fmt.Fprintf(stderr, "skills: no matching skills found for: %s\n", strings.Join(options.skills, ", "))
 			return 0
 		}
 		fmt.Fprintln(stdout, "No skills found to remove.")
@@ -102,12 +102,12 @@ func runRemove(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(options.skills) == 0 && !options.all {
 		if !isTerminal(os.Stdin) {
-			fmt.Fprintln(stderr, "skills-go: specify skill names or use --all when running non-interactively")
+			fmt.Fprintln(stderr, "skills: specify skill names or use --all when running non-interactively")
 			return 1
 		}
 		resolved, err = promptRemoveSkills(os.Stdin, stdout, resolved)
 		if err != nil {
-			fmt.Fprintf(stderr, "skills-go: %v\n", err)
+			fmt.Fprintf(stderr, "skills: %v\n", err)
 			return 1
 		}
 		if len(resolved) == 0 {
@@ -126,7 +126,7 @@ func runRemove(args []string, stdout, stderr io.Writer) int {
 		config, _ := agent.ConfigFor(id)
 		if options.global && !config.SupportsGlobal {
 			if len(options.agents) > 0 {
-				fmt.Fprintf(stderr, "skills-go: %s does not support global skill removal\n", config.DisplayName)
+				fmt.Fprintf(stderr, "skills: %s does not support global skill removal\n", config.DisplayName)
 				return 1
 			}
 		}
@@ -139,7 +139,7 @@ func runRemove(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "Remove %d skill(s)? [y/N] ", len(resolved))
 		answer, readErr := readPromptLine(os.Stdin)
 		if readErr != nil {
-			fmt.Fprintf(stderr, "skills-go: read removal confirmation: %v\n", readErr)
+			fmt.Fprintf(stderr, "skills: read removal confirmation: %v\n", readErr)
 			return 1
 		}
 		if !strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes") {
@@ -158,12 +158,12 @@ func runRemove(args []string, stdout, stderr io.Writer) int {
 			}
 			_, removeErr := installer.RemoveAgentSkill(name, id, installer.Options{Global: options.global, CWD: cwd})
 			if removeErr != nil {
-				fmt.Fprintf(stderr, "skills-go: remove %s for %s: %v\n", name, id, removeErr)
+				fmt.Fprintf(stderr, "skills: remove %s for %s: %v\n", name, id, removeErr)
 				failed = true
 			}
 			if options.global {
 				if removeErr := removeLegacyGlobalAgentCopy(name, id, targetAgents); removeErr != nil {
-					fmt.Fprintf(stderr, "skills-go: remove legacy %s for %s: %v\n", name, id, removeErr)
+					fmt.Fprintf(stderr, "skills: remove legacy %s for %s: %v\n", name, id, removeErr)
 					failed = true
 				}
 			}
@@ -171,7 +171,7 @@ func runRemove(args []string, stdout, stderr io.Writer) int {
 				for _, subagent := range agent.EveSubagents(cwd) {
 					_, removeErr = installer.RemoveAgentSkill(name, id, installer.Options{CWD: cwd, EveSubagent: subagent})
 					if removeErr != nil {
-						fmt.Fprintf(stderr, "skills-go: remove %s for eve/%s: %v\n", name, subagent, removeErr)
+						fmt.Fprintf(stderr, "skills: remove %s for eve/%s: %v\n", name, subagent, removeErr)
 						failed = true
 					}
 				}
@@ -181,7 +181,7 @@ func runRemove(args []string, stdout, stderr io.Writer) int {
 		remaining := remainingAgentsUseSkill(name, targetAgents, options.global, cwd)
 		if !remaining {
 			if err := installer.RemoveCanonicalSkill(name, installer.Options{Global: options.global, CWD: cwd}); err != nil {
-				fmt.Fprintf(stderr, "skills-go: remove canonical %s: %v\n", name, err)
+				fmt.Fprintf(stderr, "skills: remove canonical %s: %v\n", name, err)
 				failed = true
 			}
 			if _, exists := lockSkills[name]; exists {
@@ -200,7 +200,7 @@ func runRemove(args []string, stdout, stderr io.Writer) int {
 	if changedLock {
 		err = writeManagementLock(options.global, cwd, lock)
 		if err != nil {
-			fmt.Fprintf(stderr, "skills-go: write lock: %v\n", err)
+			fmt.Fprintf(stderr, "skills: write lock: %v\n", err)
 			failed = true
 		}
 	}

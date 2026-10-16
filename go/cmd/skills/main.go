@@ -18,7 +18,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if len(args) == 1 && (args[0] == "--version" || args[0] == "-v") {
-		fmt.Fprintf(stdout, "skills-go %s\n", version)
+		fmt.Fprintf(stdout, "skills %s\n", version)
 		return 0
 	}
 
@@ -33,7 +33,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	canonical, ok := commands[args[0]]
 	if !ok {
-		fmt.Fprintf(stderr, "skills-go: unknown command %q\n", args[0])
+		fmt.Fprintf(stderr, "skills: unknown command %q\n", args[0])
 		return 2
 	}
 	rest := args[1:]
@@ -44,15 +44,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		case "use":
 			printUseHelp(stdout)
 		case "init":
-			fmt.Fprintln(stdout, "Usage: skills-go init [name]")
+			fmt.Fprintln(stdout, "Usage: skills init [name]")
 		case "list":
-			fmt.Fprintln(stdout, "Usage: skills-go list [--global] [--agent <agents>] [--json]")
+			fmt.Fprintln(stdout, "Usage: skills list [--global] [--agent <agents>] [--json]")
 		case "remove":
-			fmt.Fprintln(stdout, "Usage: skills-go remove [skills...] [--global] [--agent <agents>] [--all] [--yes]")
+			fmt.Fprintln(stdout, "Usage: skills remove [skills...] [--global] [--agent <agents>] [--all] [--yes]")
 		case "update":
-			fmt.Fprintln(stdout, "Usage: skills-go update [skills...] [--global|--project] [--yes]")
+			fmt.Fprintln(stdout, "Usage: skills update [skills...] [--global|--project] [--yes]")
 		case "experimental_install":
-			fmt.Fprintln(stdout, "Usage: skills-go experimental_install")
+			fmt.Fprintln(stdout, "Usage: skills experimental_install")
 		default:
 			printHelp(stdout)
 		}
@@ -74,7 +74,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "update":
 		return runUpdate(rest, stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "skills-go: command %q is not implemented yet\n", canonical)
+		fmt.Fprintf(stderr, "skills: command %q is not implemented yet\n", canonical)
 		return 1
 	}
 }
@@ -89,7 +89,7 @@ func containsHelpFlag(args []string) bool {
 }
 
 func printHelp(stdout io.Writer) {
-	fmt.Fprint(stdout, `Usage: skills-go <command> [options]
+	fmt.Fprint(stdout, `Usage: skills <command> [options]
 
 Core commands:
   add <source>          Add skills from a source (alias: a)
@@ -107,7 +107,7 @@ Options:
 }
 
 func printAddHelp(stdout io.Writer) {
-	fmt.Fprint(stdout, `Usage: skills-go add <source> [options]
+	fmt.Fprint(stdout, `Usage: skills add <source> [options]
 
 Options:
   -g, --global           Install globally
