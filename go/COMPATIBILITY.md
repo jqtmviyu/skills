@@ -85,9 +85,9 @@ GitHub、GitLab、本地路径和通用 HTTPS/SSH Git 来源均可使用；来�
 
 ## Git 获取与更新语义
 
-对于 Git 来源，CLI 请求 shallow partial clone（`blob:none`），先扫描树和候选 `SKILL.md` 元数据；选择后再 materialize 所选技能目录及其支持文件。服务器拒绝或忽略 filter 时会退回普通 shallow clone，并报告无法节省传输量。根目录技能可能需要仓库中的全部文件，因为整个仓库就是技能目录。
+Global GitHub lock 的 `update` 优先通过 GitHub Trees API 比较技能目录 tree hash；API 认证按 `GITHUB_TOKEN`、`GH_TOKEN` 的顺序使用，遇到限流 403 或匿名访问的 401/404 时，再通过 `gh api` 使用 `gh auth login` 凭据。普通权限 403 不重试。API 不可用或锁定路径缺失时，显示原因并回退到 Git shallow partial clone（`blob:none`）。Project 和通用 Git 来源直接使用 partial clone。扫描器预取发现所需的 `SKILL.md` 和 manifest blobs：支持 `fetch-pack --stdin` 的 Git transport 使用单次请求，HTTPS transport 同时最多请求 2 个缺失 blob，避免创建大量并行连接。候选与 materialize 目录均来自仓库实际 Git tree 和 lock 路径，不假定技能位于根目录的 `skills/` 下。CLI 会显示当前来源和阶段、实时转发 Git fetch 进度，并在结束时报告无更新、已更新技能或失败摘要。每次 Git scan 最长等待 5 分钟；服务器拒绝或忽略 filter 时会退回普通 shallow clone并报告无法节省传输量。根目录技能可能需要仓库中的全部文件，因为整个仓库就是技能目录。
 
-未固定 ref 的 GitHub Trees 检查使用仓库默认分支。更新只针对 lock 中的技能及其目录；标准 well-known lock 条目根据 digest/content 语义检查和更新。
+更新只扫描 lock 中匹配的技能来源及其目录；标准 well-known lock 条目根据 digest/content 语义检查和更新。
 
 ## 错误与退出状态
 
@@ -97,4 +97,4 @@ GitHub、GitLab、本地路径和通用 HTTPS/SSH Git 来源均可使用；来�
 
 ## 明确不提供的功能
 
-Go 版当前不实现 standalone `find`/`search`、`experimental_sync`、遥测、安全审计、Notion/Zapier 专用 API 或 snapshot 下载服务，也不提供 GitHub Enterprise 专用 API host 配置。标准 Git HTTPS/SSH 凭据与支持的 GitHub API 流程仍可使用。
+Go 版当前不实现 standalone `find`/`search`、`experimental_sync`、遥测、安全审计、Notion/Zapier 专用 API 或 snapshot 下载服务，也不提供 GitHub Enterprise 专用 API host 配置。Git 来源通过标准 Git HTTPS/SSH 和 Git 配置的凭据访问；Global GitHub 更新先尝试 Trees API，失败后使用标准 Git partial clone。

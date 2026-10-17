@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -327,7 +328,7 @@ func TestGlobalGitHubCheckUsesTreesMetadataAndLeavesLockUntouched(t *testing.T) 
 	gitTest(t, "", "--git-dir="+fixture.Bare, "symbolic-ref", "HEAD", "refs/heads/feature/new")
 	var metadataRequests, treeRequests atomic.Int32
 	api := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("Authorization") != "Bearer test-github-token" {
+		if request.Header.Get("Authorization") != "Bearer preferred-github-token" {
 			t.Errorf("GitHub API authorization = %q, want environment token", request.Header.Get("Authorization"))
 		}
 		response.Header().Set("Content-Type", "application/json")
@@ -368,7 +369,8 @@ func TestGlobalGitHubCheckUsesTreesMetadataAndLeavesLockUntouched(t *testing.T) 
 	trace := filepath.Join(root, "check-git.trace")
 	stdout, stderr, exitCode = runCLIAtWithEnv(t, binary, project, home, "", []string{
 		"SKILLS_GO_TEST_GITHUB_API_URL=" + api.URL,
-		"GITHUB_TOKEN=test-github-token",
+		"GITHUB_TOKEN=preferred-github-token",
+		"GH_TOKEN=secondary-gh-token",
 		"GIT_TRACE_PACKET=" + trace,
 	}, "check")
 	if exitCode != 0 {
@@ -376,6 +378,11 @@ func TestGlobalGitHubCheckUsesTreesMetadataAndLeavesLockUntouched(t *testing.T) 
 	}
 	if metadataRequests.Load() != 1 || treeRequests.Load() != 1 {
 		t.Errorf("GitHub API requests = metadata:%d tree:%d, want one default-branch lookup and one tree request", metadataRequests.Load(), treeRequests.Load())
+	}
+	for _, expected := range []string{"Checking skills from test/repo via GitHub Trees API", "No updates found", "Update check completed"} {
+		if !strings.Contains(stdout, expected) {
+			t.Errorf("successful Trees API check output does not contain %q: %s", expected, stdout)
+		}
 	}
 	after, err := os.ReadFile(lockPath)
 	if err != nil {
@@ -903,7 +910,7 @@ func TestGitHubEnterpriseLockUsesGitWithoutCallingGitHubDotComAPI(t *testing.T) 
 	if apiRequests.Load() != 0 {
 		t.Errorf("GitHub Enterprise source called public GitHub API %d times", apiRequests.Load())
 	}
-	if !strings.Contains(stderr, "GitHub Trees API unavailable") {
+	if !strings.Contains(stderr, "source is not hosted on github.com") {
 		t.Errorf("Enterprise check did not report Git fallback: %s", stderr)
 	}
 }
@@ -1013,8 +1020,16 @@ func TestGlobalCheckFallsBackToPartialGitWhenTreesAPIIsUnavailable(t *testing.T)
 	if exitCode != 0 {
 		t.Fatalf("Git fallback check: exit %d; stdout: %s; stderr: %s", exitCode, stdout, stderr)
 	}
-	if !strings.Contains(stderr, "Trees API unavailable") || !strings.Contains(strings.ToLower(stderr), "filter") {
-		t.Errorf("fallback/filter capability was not explained: %s", stderr)
+	for _, expected := range []string{"GitHub API returned HTTP 503", "Git server does not support blob filtering"} {
+		if !strings.Contains(stderr, expected) {
+			t.Errorf("fallback diagnostics do not contain %q: %s", expected, stderr)
+		}
+	}
+	if !strings.Contains(stdout, "Checking skills from test/repo via Git partial clone") || !strings.Contains(stdout, "Update check completed") {
+		t.Errorf("fallback start/result is missing: %s", stdout)
+	}
+	if !strings.Contains(stderr, "Receiving objects") && !strings.Contains(stderr, "Enumerating objects") {
+		t.Errorf("Git fetch progress was not streamed: %s", stderr)
 	}
 	after, err := os.ReadFile(lockPath)
 	if err != nil {
@@ -1022,6 +1037,93 @@ func TestGlobalCheckFallsBackToPartialGitWhenTreesAPIIsUnavailable(t *testing.T)
 	}
 	if string(after) != string(before) {
 		t.Error("unchanged fallback check rewrote the Global lock")
+	}
+}
+
+func TestPartialGitUpdateScanReportsTimeout(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitPath, err = filepath.Abs(gitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	shim := filepath.Join(bin, "git")
+	script := "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = fetch ]; then exec /bin/sleep 5; fi\ndone\nexec \"" + gitPath + "\" \"$@\"\n"
+	if err := os.WriteFile(shim, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, _, err = openPartialGitUpdateSourceWithTimeout("https://github.com/test/repo.git", io.Discard, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "timed out after 1s") {
+		t.Fatalf("partial Git scan error = %v, want a clear timeout", err)
+	}
+}
+
+func TestGlobalUpdateReportsPartialGitFailureAfterTreesAPIFailure(t *testing.T) {
+	binary := buildCLI(t)
+	root := t.TempDir()
+	project, home := filepath.Join(root, "project"), filepath.Join(root, "home")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fixture := createGitHubFixture(t, root, home, map[string]string{
+		"skills/alpha/SKILL.md": "---\nname: alpha\ndescription: alpha description\n---\n",
+	})
+	configPath := filepath.Join(home, ".gitconfig")
+	config, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := fmt.Fprintf(config, "\n[url \"file://%s\"]\n\tinsteadOf = https://github.com/mattpocock/skills.git\n", filepath.ToSlash(fixture.Bare))
+	closeErr := config.Close()
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	stdout, stderr, exitCode := runCLIAt(t, binary, project, home, "", "add", "mattpocock/skills", "--skill", "alpha", "--agent", "claude-code", "--global", "--yes")
+	if exitCode != 0 {
+		t.Fatalf("install source fixture: exit %d; stdout: %s; stderr: %s", exitCode, stdout, stderr)
+	}
+	if err := os.WriteFile(configPath, []byte("[url \"file:///missing/skills.git\"]\n\tinsteadOf = https://github.com/mattpocock/skills.git\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ghLog := filepath.Join(root, "gh-called")
+	ghShim := filepath.Join(bin, "gh")
+	if err := os.WriteFile(ghShim, []byte("#!/bin/sh\nprintf called > \"$GH_TEST_LOG\"\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("X-RateLimit-Remaining", "42")
+		http.Error(response, `{"message":"permission denied"}`, http.StatusForbidden)
+	}))
+	defer api.Close()
+
+	stdout, stderr, exitCode = runCLIAtWithEnv(t, binary, project, home, "", []string{
+		"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"GH_TEST_LOG=" + ghLog,
+		"SKILLS_GO_TEST_GITHUB_API_URL=" + api.URL,
+	}, "update", "-g", "mattpocock/skills")
+	if exitCode == 0 {
+		t.Fatalf("failed API and Git checks returned success; stdout: %s; stderr: %s", stdout, stderr)
+	}
+	if !strings.Contains(stderr, "GitHub API returned HTTP 403: permission denied") || !strings.Contains(stderr, "Git partial clone for mattpocock/skills failed") {
+		t.Fatalf("update did not report both API and Git failures: %s", stderr)
+	}
+	if _, err := os.Stat(ghLog); !os.IsNotExist(err) {
+		t.Fatalf("gh api was used after a non-rate-limit 403: %v", err)
+	}
+	if !strings.Contains(stdout, "Checking skills from mattpocock/skills via Git partial clone") || !strings.Contains(stdout, "Update check finished with errors") {
+		t.Fatalf("update did not report fallback and final failure: %s", stdout)
 	}
 }
 
@@ -1148,6 +1250,12 @@ func TestGlobalUpdateAppliesChangedSkillPathFromTreesMetadata(t *testing.T) {
 	}
 	if requestCount.Load() != 1 {
 		t.Errorf("Trees API request count = %d, want one", requestCount.Load())
+	}
+	if !strings.Contains(stdout, "Checking skills from test/repo via GitHub Trees API") || !strings.Contains(stdout, "Fetching updated global skill payloads") {
+		t.Errorf("update progress is incomplete: %s", stdout)
+	}
+	if !strings.Contains(stderr, "Receiving objects") && !strings.Contains(stderr, "Enumerating objects") {
+		t.Errorf("updated skill payload fetch progress was not streamed: %s", stderr)
 	}
 	installed := filepath.Join(home, ".claude", "skills", "alpha")
 	if content, err := os.ReadFile(filepath.Join(installed, "references", "ref.md")); err != nil || string(content) != "version two" {
@@ -1507,5 +1615,137 @@ func TestGlobalUpdateFilterAcceptsRepositorySource(t *testing.T) {
 	}
 	if string(lockAfter) != string(lockBytes) {
 		t.Fatalf("unchanged source filter rewrote the global lock: %s", lockAfter)
+	}
+}
+
+func TestGlobalTreesAPIRetriesRateLimitWithGHLogin(t *testing.T) {
+	binary := buildCLI(t)
+	root := t.TempDir()
+	project, home := filepath.Join(root, "project"), filepath.Join(root, "home")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fixture := createGitHubFixture(t, root, home, map[string]string{
+		"skills/alpha/SKILL.md": "---\nname: alpha\ndescription: alpha description\n---\n",
+	})
+	stdout, stderr, exitCode := runCLIAt(t, binary, project, home, "", "add", "test/repo", "--skill", "alpha", "--agent", "claude-code", "--global", "--yes")
+	if exitCode != 0 {
+		t.Fatalf("install GitHub skill: exit %d; stdout: %s; stderr: %s", exitCode, stdout, stderr)
+	}
+
+	responses := filepath.Join(root, "gh-responses")
+	if err := os.MkdirAll(responses, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	repositoryJSON := []byte(`{"default_branch":"feature/new"}`)
+	treeJSON := githubTreeResponse(t, fixture.Bare, "main")
+	for name, contents := range map[string][]byte{"repository.json": repositoryJSON, "tree.json": treeJSON} {
+		if err := os.WriteFile(filepath.Join(responses, name), contents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	logPath := filepath.Join(root, "gh-args.log")
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ghShim := filepath.Join(bin, "gh")
+	shimScript := "#!/bin/sh\nif [ -n \"${GITHUB_TOKEN:-}${GH_TOKEN:-}\" ]; then exit 9; fi\nprintf '%s\\n' \"$*\" >> \"$GH_TEST_LOG\"\ncase \"$*\" in\n  *git/trees/*) cat \"$GH_TREE_RESPONSE\" ;;\n  *) cat \"$GH_REPO_RESPONSE\" ;;\nesac\n"
+	if err := os.WriteFile(ghShim, []byte(shimScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var apiRequests atomic.Int32
+	api := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		apiRequests.Add(1)
+		if request.Header.Get("Authorization") != "Bearer explicit-token" {
+			t.Errorf("unauthenticated API retry Authorization = %q, want the explicit token first", request.Header.Get("Authorization"))
+		}
+		response.Header().Set("X-RateLimit-Remaining", "0")
+		response.Header().Set("X-RateLimit-Limit", "60")
+		http.Error(response, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+	}))
+	defer api.Close()
+	stdout, stderr, exitCode = runCLIAtWithEnv(t, binary, project, home, "", []string{
+		"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"GH_TEST_LOG=" + logPath,
+		"GH_TREE_RESPONSE=" + filepath.Join(responses, "tree.json"),
+		"GH_REPO_RESPONSE=" + filepath.Join(responses, "repository.json"),
+		"GITHUB_TOKEN=explicit-token",
+		"GH_TOKEN=secondary-token",
+		"SKILLS_GO_TEST_GITHUB_API_URL=" + api.URL,
+	}, "update", "-g", "alpha")
+	if exitCode != 0 {
+		t.Fatalf("rate-limited update with gh auth: exit %d; stdout: %s; stderr: %s", exitCode, stdout, stderr)
+	}
+	if apiRequests.Load() != 2 {
+		t.Fatalf("unauthenticated API requests = %d, want two before gh auth fallback", apiRequests.Load())
+	}
+	ghArgs, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("gh api fallback was not invoked: %v", err)
+	}
+	if !strings.Contains(string(ghArgs), "repos/test/repo") || !strings.Contains(string(ghArgs), "repos/test/repo/git/trees/feature%2Fnew?recursive=1") {
+		t.Fatalf("gh api fallback did not query repository and tree: %s", ghArgs)
+	}
+	if strings.Contains(stderr, "GitHub Trees API request failed") || strings.Contains(stdout, "Falling back to Git partial clone") {
+		t.Fatalf("successful gh authentication still fell back to Git: stdout=%s stderr=%s", stdout, stderr)
+	}
+}
+
+func TestGitHubAPIRetriesAnonymousNotFoundWithGHLogin(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(root, "gh.log")
+	gh := filepath.Join(bin, "gh")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$GH_TEST_LOG\"\nprintf '%s\\n' '{\"default_branch\":\"main\"}'\n"
+	if err := os.WriteFile(gh, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GH_TEST_LOG", logPath)
+
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		http.Error(response, `{"message":"Not Found"}`, http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	body, err := fetchGitHubAPIResponse(&http.Client{Timeout: time.Second}, server.URL+"/repos/private/repo")
+	if err != nil {
+		t.Fatalf("fetch after gh authentication fallback: %v", err)
+	}
+	if strings.TrimSpace(string(body)) != `{"default_branch":"main"}` {
+		t.Fatalf("gh response = %s, want repository metadata", body)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("anonymous requests = %d, want one before gh fallback", requests.Load())
+	}
+	args, err := os.ReadFile(logPath)
+	if err != nil || !strings.Contains(string(args), "repos/private/repo") {
+		t.Fatalf("gh api did not retry private-repository metadata: args=%s error=%v", args, err)
+	}
+}
+
+func TestGitHubAPIUsesGHEnvironmentToken(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "test-gh-token")
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if got := request.Header.Get("Authorization"); got != "Bearer test-gh-token" {
+			t.Errorf("Authorization = %q, want GH_TOKEN", got)
+		}
+		fmt.Fprint(response, `{"default_branch":"main"}`)
+	}))
+	defer server.Close()
+
+	client := &http.Client{Timeout: time.Second}
+	if _, err := fetchGitHubAPIResponse(client, server.URL+"/repos/test/repo"); err != nil {
+		t.Fatalf("fetch with GH_TOKEN: %v", err)
 	}
 }

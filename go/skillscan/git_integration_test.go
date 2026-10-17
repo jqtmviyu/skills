@@ -1,6 +1,7 @@
 package skillscan
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math/rand"
@@ -57,6 +58,58 @@ func contains(values []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func TestGitUpdateDiscoveryBatchesMetadataBlobFetches(t *testing.T) {
+	fixture := newGitFixture(t, true, false)
+	trace := filepath.Join(t.TempDir(), "git-packets.log")
+	t.Setenv("GIT_TRACE_PACKET", trace)
+
+	var progress bytes.Buffer
+	scan, err := Open(context.Background(), fixture.URL+"#main", Options{Progress: &progress})
+	if err != nil {
+		t.Fatalf("Open Git source: %v", err)
+	}
+	defer scan.Close()
+	if len(scan.Candidates()) != 3 {
+		t.Fatalf("discovered skills = %d, want 3", len(scan.Candidates()))
+	}
+	if !strings.Contains(progress.String(), "in one Git request") {
+		t.Fatalf("metadata batch progress was not reported: %s", progress.String())
+	}
+	packets, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetchCommands := strings.Count(string(packets), "command=fetch")
+	if fetchCommands != 2 {
+		t.Fatalf("Git fetch RPC count = %d, want one commit/tree fetch plus one batched metadata fetch; progress: %s", fetchCommands, progress.String())
+	}
+}
+
+func TestGitHTTPSUpdatePrefetchesMetadataInParallel(t *testing.T) {
+	fixture := newGitFixture(t, true, false)
+	gitConfig := filepath.Join(t.TempDir(), "gitconfig")
+	config := fmt.Sprintf("[url %q]\n\tinsteadOf = https://github.com/test/repo.git\n", fixture.URL)
+	if err := os.WriteFile(gitConfig, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
+	var progress bytes.Buffer
+	scan, err := Open(context.Background(), "https://github.com/test/repo.git#main", Options{Progress: &progress})
+	if err != nil {
+		t.Fatalf("Open HTTPS Git source: %v", err)
+	}
+	defer scan.Close()
+	if len(scan.Candidates()) != 3 {
+		t.Fatalf("discovered skills = %d, want 3", len(scan.Candidates()))
+	}
+	if !strings.Contains(progress.String(), "at most 2 parallel Git HTTPS requests") {
+		t.Fatalf("HTTPS metadata fetch was not batched concurrently: %s", progress.String())
+	}
+	if strings.Contains(progress.String(), "could not batch-fetch") {
+		t.Fatalf("HTTPS metadata fetch used unsupported fetch-pack transport: %s", progress.String())
+	}
 }
 
 func TestGitPartialScanFetchesMetadataThenOnlySelectedSkill(t *testing.T) {

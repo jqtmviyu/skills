@@ -3,6 +3,7 @@ package skillscan
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -16,6 +17,7 @@ type Options struct {
 	IncludeInternal       bool
 	IncludeDuplicateNames bool
 	TempDir               string
+	Progress              io.Writer
 }
 
 type Candidate struct {
@@ -56,6 +58,7 @@ type Scan struct {
 	byPath            map[string]Candidate
 	lockedSkillNames  map[string]bool
 	filterStatus      FilterStatus
+	missingObjects    map[string]bool
 	closed            bool
 }
 
@@ -97,6 +100,11 @@ func Open(ctx context.Context, input string, options Options) (*Scan, error) {
 				_ = os.RemoveAll(scan.tempDir)
 			}
 			return nil, err
+		}
+		if options.Progress != nil {
+			if err := scan.prefetchDiscoveryBlobs(); err != nil {
+				fmt.Fprintf(options.Progress, "Warning: could not batch-fetch skill metadata; continuing with on-demand Git fetches: %v\n", err)
+			}
 		}
 	}
 	if err := scan.discover(); err != nil {

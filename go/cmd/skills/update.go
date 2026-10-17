@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
@@ -108,8 +110,10 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "No installed skills found matching: %s\n", strings.Join(options.skills, ", "))
 	}
 	if failed {
+		fmt.Fprintln(stdout, "Update check finished with errors; see the messages above.")
 		return 1
 	}
+	fmt.Fprintln(stdout, "Update check completed.")
 	return 0
 }
 
@@ -253,8 +257,17 @@ func updateGlobalSkills(options updateOptions, stdout, stderr io.Writer) (int, b
 	for _, key := range keys {
 		items := groups[key]
 		first := items[0].entry
+		sourceLabel := updateSourceLabel(first)
 		sourceType, _ := first.String("sourceType")
-		tree, apiErr := fetchGitHubTree(first)
+		var tree *githubTreeDocument
+		var apiErr error
+		if sourceType == "github" {
+			fmt.Fprintf(stdout, "Checking skills from %s via GitHub Trees API...\n", sourceLabel)
+			tree, apiErr = fetchGitHubTree(first)
+			if apiErr != nil {
+				fmt.Fprintf(stderr, "GitHub Trees API request failed for %s (%v); falling back to Git partial clone.\n", sourceLabel, apiErr)
+			}
+		}
 		var changed []updateLocation
 		if sourceType == "github" && apiErr == nil && tree != nil {
 			missingPath := false
@@ -274,18 +287,19 @@ func updateGlobalSkills(options updateOptions, stdout, stderr io.Writer) (int, b
 					}
 				}
 				if len(changed) > 0 {
-					fmt.Fprintf(stdout, "Found %d global update(s) from %s.\n", len(changed), key)
+					fmt.Fprintf(stdout, "Found %d global update(s) from %s.\n", len(changed), sourceLabel)
 					changed = updateGlobalFromScan(changed, stdout, stderr, &failed)
+				} else {
+					fmt.Fprintf(stdout, "No updates found for %d global skill(s) from %s.\n", len(items), sourceLabel)
 				}
 				continue
 			}
-			fmt.Fprintf(stderr, "skills: locked skill path changed for %s; checking with partial Git scan\n", key)
-		} else if sourceType == "github" {
-			fmt.Fprintf(stderr, "skills: GitHub Trees API unavailable for %s; checking with partial Git scan\n", key)
+			fmt.Fprintf(stderr, "GitHub Trees API response did not include a locked skill path for %s; falling back to Git partial clone.\n", sourceLabel)
+			fmt.Fprintf(stdout, "Falling back to Git partial clone for %s.\n", sourceLabel)
 		}
 		changed = checkGroupWithPartialGit(first, items, true, stdout, stderr, &failed)
 		if len(changed) > 0 {
-			fmt.Fprintf(stdout, "Found %d global update(s) from %s.\n", len(changed), key)
+			fmt.Fprintf(stdout, "Found %d global update(s) from %s.\n", len(changed), sourceLabel)
 			updateGlobalFromScan(changed, stdout, stderr, &failed)
 		}
 	}
@@ -296,6 +310,15 @@ func globalSourceKey(entry lockfile.Entry) string {
 	source, _ := entry.String("source")
 	ref, _ := entry.String("ref")
 	return source + "\n" + ref
+}
+
+func updateSourceLabel(entry lockfile.Entry) string {
+	source, _ := entry.String("source")
+	ref, _ := entry.String("ref")
+	if ref != "" {
+		return source + "#" + ref
+	}
+	return source
 }
 
 func changedWellKnownItems(baseURL string, items []updateItem) ([]updateItem, error) {
@@ -484,32 +507,127 @@ func fetchGitHubTree(entry lockfile.Entry) (*githubTreeDocument, error) {
 }
 
 func fetchGitHubAPIResponse(client *http.Client, endpoint string) ([]byte, error) {
-	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Accept", "application/vnd.github+json")
-	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	token := os.Getenv("GITHUB_TOKEN")
 	if token == "" {
 		token = os.Getenv("GH_TOKEN")
 	}
+	body, status, headers, err := fetchGitHubAPIWithToken(client, endpoint, token)
+	if err == nil {
+		return body, nil
+	}
+	if !githubAPIAuthRetryable(status, headers) {
+		return nil, err
+	}
+	cliBody, cliErr := fetchGitHubAPIWithCLI(endpoint)
+	if cliErr == nil {
+		return cliBody, nil
+	}
+	return nil, fmt.Errorf("%w; gh CLI authentication retry failed: %v", err, cliErr)
+}
+
+func fetchGitHubAPIWithToken(client *http.Client, endpoint, token string) ([]byte, int, http.Header, error) {
+	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, 0, nil, err
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
 	if err != nil {
-		return nil, err
+		return nil, response.StatusCode, response.Header, err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("GitHub API returned HTTP %d", response.StatusCode)
+		return nil, response.StatusCode, response.Header, githubAPIResponseError(response.StatusCode, response.Header, body)
 	}
-	return body, nil
+	return body, response.StatusCode, response.Header, nil
+}
+
+func githubAPIAuthRetryable(status int, headers http.Header) bool {
+	return status == http.StatusUnauthorized || status == http.StatusNotFound ||
+		(status == http.StatusForbidden && headers.Get("X-RateLimit-Remaining") == "0")
+}
+
+func githubAPIResponseError(status int, headers http.Header, body []byte) error {
+	message := ""
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &payload) == nil {
+		message = strings.TrimSpace(payload.Message)
+	}
+	if message == "" {
+		message = strings.TrimSpace(string(body))
+	}
+	if len(message) > 240 {
+		message = message[:240] + "…"
+	}
+	if remaining := headers.Get("X-RateLimit-Remaining"); remaining != "" {
+		message += fmt.Sprintf(" (rate limit remaining: %s", remaining)
+		if reset := headers.Get("X-RateLimit-Reset"); reset != "" {
+			message += ", resets at " + reset
+		}
+		message += ")"
+	}
+	if message == "" {
+		return fmt.Errorf("GitHub API returned HTTP %d", status)
+	}
+	return fmt.Errorf("GitHub API returned HTTP %d: %s", status, message)
+}
+
+func githubCLIEnvironment() []string {
+	environment := make([]string, 0, len(os.Environ())+1)
+	for _, variable := range os.Environ() {
+		if strings.HasPrefix(variable, "GITHUB_TOKEN=") || strings.HasPrefix(variable, "GH_TOKEN=") || strings.HasPrefix(variable, "GH_PROMPT_DISABLED=") {
+			continue
+		}
+		environment = append(environment, variable)
+	}
+	return append(environment, "GH_PROMPT_DISABLED=1")
+}
+
+func fetchGitHubAPIWithCLI(endpoint string) ([]byte, error) {
+	gh, err := exec.LookPath("gh")
+	if err != nil {
+		return nil, fmt.Errorf("gh executable not found")
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parse GitHub API endpoint: %w", err)
+	}
+	host := strings.TrimSpace(os.Getenv("GH_HOST"))
+	if host == "" {
+		host = parsed.Hostname()
+		if host == "api.github.com" {
+			host = "github.com"
+		}
+	}
+	apiPath := strings.TrimPrefix(parsed.EscapedPath(), "/")
+	if parsed.RawQuery != "" {
+		apiPath += "?" + parsed.RawQuery
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, gh, "api", apiPath, "--method", "GET", "--hostname", host)
+	command.Env = githubCLIEnvironment()
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	output, err := command.Output()
+	if err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		return nil, fmt.Errorf("gh api failed: %s", detail)
+	}
+	return output, nil
 }
 
 func githubRepository(entry lockfile.Entry) (string, string, bool) {
@@ -625,12 +743,14 @@ func updateProjectSkills(options updateOptions, cwd string, stdout, stderr io.Wr
 		if len(changed) == 0 {
 			continue
 		}
-		session, openErr := openAddSource(context.Background(), input, skillscan.Options{FullDepth: true, IncludeInternal: true, IncludeDuplicateNames: true})
+		fmt.Fprintf(stdout, "Fetching updated project skill payloads from %s...\n", input)
+		session, cancelScan, openErr := openPartialGitUpdateSource(input, stderr)
 		if openErr != nil {
 			fmt.Fprintf(stderr, "skills: cannot install updates from %s: %v\n", input, openErr)
 			failed = true
 			continue
 		}
+		defer cancelScan()
 		paths := make([]string, 0, len(changed))
 		for _, update := range changed {
 			paths = append(paths, update.candidate.Path)
@@ -685,6 +805,27 @@ func updateProjectSkills(options updateOptions, cwd string, stdout, stderr io.Wr
 	return found, failed
 }
 
+const partialGitUpdateTimeout = 5 * time.Minute
+
+func openPartialGitUpdateSource(input string, progress io.Writer) (*addSourceSession, context.CancelFunc, error) {
+	return openPartialGitUpdateSourceWithTimeout(input, progress, partialGitUpdateTimeout)
+}
+
+func openPartialGitUpdateSourceWithTimeout(input string, progress io.Writer, timeout time.Duration) (*addSourceSession, context.CancelFunc, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	session, err := openAddSource(ctx, input, skillscan.Options{
+		FullDepth: true, IncludeInternal: true, IncludeDuplicateNames: true, Progress: progress,
+	})
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			err = fmt.Errorf("Git scan timed out after %s: %w", timeout, err)
+		}
+		cancel()
+		return nil, nil, err
+	}
+	return session, cancel, nil
+}
+
 func checkGroupWithPartialGit(first lockfile.Entry, items []updateItem, global bool, stdout, stderr io.Writer, failed *bool) []updateLocation {
 	input, err := restoreScanInput(first)
 	if err != nil {
@@ -692,13 +833,21 @@ func checkGroupWithPartialGit(first lockfile.Entry, items []updateItem, global b
 		*failed = true
 		return nil
 	}
-	session, err := openAddSource(context.Background(), input, skillscan.Options{FullDepth: true, IncludeInternal: true, IncludeDuplicateNames: true})
+	source, _ := first.String("source")
+	if source == "" {
+		source = input
+	}
+	fmt.Fprintf(stdout, "Checking skills from %s via Git partial clone...\n", source)
+	session, cancelScan, err := openPartialGitUpdateSource(input, stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "skills: cannot check source %s: %v\n", input, err)
+		fmt.Fprintf(stderr, "skills: Git partial clone for %s failed: %v\n", source, err)
 		*failed = true
 		return nil
 	}
-	defer session.Close()
+	defer func() {
+		session.Close()
+		cancelScan()
+	}()
 	if status := session.scan.FilterStatus(); status.Message != "" {
 		fmt.Fprintf(stderr, "Warning: %s\n", status.Message)
 	}
@@ -731,6 +880,9 @@ func checkGroupWithPartialGit(first lockfile.Entry, items []updateItem, global b
 				changed = append(changed, location)
 			}
 		}
+		if len(changed) == 0 {
+			fmt.Fprintf(stdout, "No updates found for %d global skill(s) from %s.\n", len(items), source)
+		}
 		return changed
 	}
 
@@ -762,6 +914,9 @@ func checkGroupWithPartialGit(first lockfile.Entry, items []updateItem, global b
 			location.path = skill.Directory
 			changed = append(changed, location)
 		}
+	}
+	if len(changed) == 0 {
+		fmt.Fprintf(stdout, "No updates found for %d project skill(s) from %s.\n", len(items), source)
 	}
 	return changed
 }
@@ -865,12 +1020,14 @@ func updateGlobalFromScan(changed []updateLocation, stdout, stderr io.Writer, fa
 		*failed = true
 		return nil
 	}
-	session, err := openAddSource(context.Background(), input, skillscan.Options{FullDepth: true, IncludeInternal: true, IncludeDuplicateNames: true})
+	fmt.Fprintf(stdout, "Fetching updated global skill payloads from %s...\n", input)
+	session, cancelScan, err := openPartialGitUpdateSource(input, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "skills: cannot install global updates from %s: %v\n", input, err)
 		*failed = true
 		return nil
 	}
+	defer cancelScan()
 	defer session.Close()
 	var selected []updateLocation
 	for _, update := range changed {
